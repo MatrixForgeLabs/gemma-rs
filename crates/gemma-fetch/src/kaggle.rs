@@ -74,6 +74,9 @@ fn env_var(name: &str) -> Option<String> {
 }
 
 fn load_auth() -> Result<KaggleAuth> {
+    // Best-effort .env load so callers don't have to do it explicitly.
+    let _ = dotenvy::dotenv();
+
     if let Some(tok) = env_var("KAGGLE_API_TOKEN").or_else(|| env_var("KAGGLE_TOKEN")) {
         // Accept "username:key" or JSON {"username": "...", "key": "..."}
         if let Some((u, k)) = tok.split_once(':') {

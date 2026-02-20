@@ -51,10 +51,11 @@ Binary: `cargo run -p gemma-fetch -- <options>`
 
 - Download a Kaggle model (latest version):
   ```sh
-  export KAGGLE_API_TOKEN='username:key'   # OR a bearer token, OR KAGGLE_USERNAME/KAGGLE_KEY, OR ~/.kaggle/kaggle.json
+  # Preferred: API token from Kaggle account page
+  echo "KAGGLE_API_TOKEN=your_token_string" > .env   # or export in your shell
   cargo run -p gemma-fetch -- --kaggle google/gemma-3/gguf/gemma-3-1b-it-qat-q4_0 --out models/
   ```
-  Use `--version N` to pin a specific version. Credentials can also live in `~/.kaggle/kaggle.json`.
+  Use `--version N` to pin a specific version. Legacy creds (`KAGGLE_USERNAME`/`KAGGLE_KEY` or `~/.kaggle/kaggle.json`) still work for compatibility.
 
 - Download a Hugging Face file:
   ```sh
