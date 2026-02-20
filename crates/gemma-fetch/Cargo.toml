@@ -11,3 +11,5 @@ url = "2"
 thiserror = { workspace = true }
 directories = "5"
 dotenvy = "0.15"
+flate2 = "1"
+tar = "0.4"

@@ -67,7 +67,7 @@ impl KaggleHandle {
         Ok(Self {
             owner: parts[0].to_string(),
             model: parts[1].to_string(),
-            framework: parts[2].to_uppercase(), // Kaggle framework slugs are case-sensitive (e.g., GGUF)
+            framework: parts[2].to_string(),
             variation: parts[3].to_string(),
             version,
         })
@@ -172,8 +172,8 @@ pub fn download_model(
     }
     let base = if let Some(v) = version {
         format!(
-            "{KAGGLE_API}/models/{}/{}/{}/{}/versions/{}/download",
-            handle.owner, handle.model, handle.framework, handle.variation, v
+            "{KAGGLE_API}/models/{}/{}/{}/{}/{v}/download",
+            handle.owner, handle.model, handle.framework, handle.variation
         )
     } else {
         format!(
@@ -187,7 +187,8 @@ pub fn download_model(
 
     let req = client()?
         .get(url)
-        .header(USER_AGENT, "gemma-rs-fetch/0.1");
+        .header(USER_AGENT, "kagglehub/0.4.1")
+        .header(reqwest::header::ACCEPT, "application/octet-stream");
 
     let mut resp = send_with_auth(req, &auth)?;
 
@@ -229,36 +230,84 @@ pub fn download_model(
         .error_for_status()
         .map_err(|e| FetchError::Network(format!("kaggle status: {e}")))?;
 
-    write_stream_to_path(&mut resp, &dest)?;
-    Ok(dest)
+    // Kaggle wraps model downloads in tar.gz archives.
+    // Download to a temp file first, then extract if it's an archive.
+    let tmp = dest.with_extension("download.tmp");
+    write_stream_to_path(&mut resp, &tmp)?;
+
+    match try_extract_tar_gz(&tmp, dest_dir) {
+        Ok(extracted) => {
+            let _ = std::fs::remove_file(&tmp);
+            eprintln!("Extracted: {}", extracted.display());
+            Ok(extracted)
+        }
+        Err(_) => {
+            // Not an archive — just rename the temp file.
+            std::fs::rename(&tmp, &dest)
+                .map_err(|e| FetchError::Io(format!("rename: {e}")))?;
+            Ok(dest)
+        }
+    }
+}
+
+/// If `path` is a tar.gz, extract its contents to `dest_dir` and return the
+/// path to the first extracted file.
+fn try_extract_tar_gz(path: &Path, dest_dir: &Path) -> Result<PathBuf> {
+    use flate2::read::GzDecoder;
+    use std::fs::File;
+
+    let f = File::open(path).map_err(|e| FetchError::Io(format!("open: {e}")))?;
+    let gz = GzDecoder::new(f);
+    let mut archive = tar::Archive::new(gz);
+
+    let mut first_file: Option<PathBuf> = None;
+    for entry in archive
+        .entries()
+        .map_err(|e| FetchError::Io(format!("tar entries: {e}")))?
+    {
+        let mut entry = entry.map_err(|e| FetchError::Io(format!("tar entry: {e}")))?;
+        let entry_path = entry
+            .path()
+            .map_err(|e| FetchError::Io(format!("tar path: {e}")))?
+            .into_owned();
+        let out = dest_dir.join(&entry_path);
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| FetchError::Io(format!("mkdir: {e}")))?;
+        }
+        entry
+            .unpack(&out)
+            .map_err(|e| FetchError::Io(format!("unpack: {e}")))?;
+        if first_file.is_none() && entry_path.extension().is_some() {
+            first_file = Some(out);
+        }
+    }
+    first_file.ok_or_else(|| FetchError::Io("empty archive".into()))
 }
 
 #[derive(serde::Deserialize)]
-struct VersionInfo {
+struct InstanceInfo {
     #[serde(rename = "versionNumber")]
-    version_number: u32,
+    version_number: Option<u32>,
 }
 
 fn latest_version(auth: &KaggleAuth, handle: &KaggleHandle) -> Result<Option<u32>> {
     let url = format!(
-        "{KAGGLE_API}/models/{}/{}/{}/{}/versions",
+        "{KAGGLE_API}/models/{}/{}/{}/{}/get",
         handle.owner, handle.model, handle.framework, handle.variation
     );
     let req = client()?.get(url).header(USER_AGENT, "gemma-rs-fetch/0.1");
     let resp = send_with_auth(req, auth)?;
     if resp.status().is_success() {
-        let versions: Vec<VersionInfo> = resp
+        let info: InstanceInfo = resp
             .json()
-            .map_err(|e| FetchError::Parse(format!("versions json: {e}")))?;
-        Ok(versions
-            .into_iter()
-            .map(|v| v.version_number)
-            .max())
+            .map_err(|e| FetchError::Parse(format!("instance json: {e}")))?;
+        Ok(info.version_number)
     } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
         Ok(None)
     } else {
         Err(FetchError::Network(format!(
-            "versions query failed: {}",
+            "instance query failed: {}",
             resp.status()
         )))
     }
