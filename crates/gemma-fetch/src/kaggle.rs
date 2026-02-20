@@ -18,14 +18,13 @@ pub struct KaggleCreds {
 }
 
 #[derive(Debug, Clone)]
-enum KaggleAuth {
-    Basic { username: String, key: String },
-    Bearer { token: String },
+struct KaggleAuth {
+    token: String,
 }
 
-// Newer Kaggle "API Token" (from account page) is used as:
+// Kaggle token format used by the Models API:
 // Authorization: KaggleToken <token>
-const KAGGLE_BEARER_SCHEME: &str = "KaggleToken";
+const KAGGLE_SCHEME: &str = "KaggleToken";
 const KAGGLE_HEADER: &str = "X-Kaggle-Authorization";
 
 #[derive(Debug, Clone, Deserialize)]
@@ -90,47 +89,11 @@ fn load_auth() -> Result<KaggleAuth> {
     let _ = dotenvy::dotenv();
 
     if let Some(tok) = env_var("KAGGLE_API_TOKEN").or_else(|| env_var("KAGGLE_TOKEN")) {
-        // Preferred: bearer API token.
-        // If a username is supplied alongside, also allow basic with token-as-key (matches UI curl).
-        if let Some(u) = env_var("KAGGLE_USERNAME") {
-            return Ok(KaggleAuth::Basic {
-                username: u,
-                key: tok,
-            });
-        }
-        return Ok(KaggleAuth::Bearer { token: tok });
-    }
-
-    if let (Ok(u), Ok(k)) = (
-        std::env::var("KAGGLE_USERNAME"),
-        std::env::var("KAGGLE_KEY"),
-    ) {
-        return Ok(KaggleAuth::Basic {
-            username: u,
-            key: k,
-        });
-    }
-
-    if let Some(path) = util::find_kaggle_json() {
-        let content = util::read_to_string(&path)?;
-        let v: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| FetchError::Parse(format!("kaggle.json: {e}")))?;
-        let username = v
-            .get("username")
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| FetchError::Auth("kaggle.json missing username".into()))?;
-        let key = v
-            .get("key")
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| FetchError::Auth("kaggle.json missing key".into()))?;
-        return Ok(KaggleAuth::Basic {
-            username: username.to_string(),
-            key: key.to_string(),
-        });
+        return Ok(KaggleAuth { token: tok });
     }
 
     Err(FetchError::Auth(
-        "set KAGGLE_API_TOKEN, or KAGGLE_USERNAME/KAGGLE_KEY, or ~/.kaggle/kaggle.json".into(),
+        "set KAGGLE_API_TOKEN (preferred) or KAGGLE_TOKEN".into(),
     ))
 }
 
@@ -275,27 +238,21 @@ fn latest_version(auth: &KaggleAuth, handle: &KaggleHandle) -> Result<Option<u32
     }
 }
 fn send_with_auth(builder: reqwest::blocking::RequestBuilder, auth: &KaggleAuth) -> Result<reqwest::blocking::Response> {
-    let builder = match auth {
-        KaggleAuth::Basic { username, key } => builder.basic_auth(username, Some(key)),
-        KaggleAuth::Bearer { token } => builder
-            .header(AUTHORIZATION, format!("{KAGGLE_BEARER_SCHEME} {token}"))
-            .header(KAGGLE_HEADER, format!("{KAGGLE_BEARER_SCHEME} {token}")),
-    };
-    let retry_clone = if matches!(auth, KaggleAuth::Bearer { .. }) {
-        builder.try_clone()
-    } else {
-        None
-    };
+    let builder = builder
+        .bearer_auth(&auth.token)
+        .header(AUTHORIZATION, format!("{KAGGLE_SCHEME} {}", auth.token))
+        .header(KAGGLE_HEADER, format!("{KAGGLE_SCHEME} {}", auth.token));
+    let retry_clone = builder.try_clone();
 
     let resp = builder
         .send()
         .map_err(|e| FetchError::Network(format!("kaggle request: {e}")))?;
 
     // If bearer with KaggleToken fails 401, retry with plain Bearer to be compatible with older servers.
-    if matches!(auth, KaggleAuth::Bearer { .. }) && resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
         if let Some(clone) = retry_clone {
             let retry_resp = clone
-                .header(AUTHORIZATION, format!("Bearer {}", match auth { KaggleAuth::Bearer { token } => token, _ => unreachable!() }))
+                .header(AUTHORIZATION, format!("Bearer {}", auth.token))
                 .send()
                 .map_err(|e| FetchError::Network(format!("kaggle retry: {e}")))?;
             return Ok(retry_resp);
