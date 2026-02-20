@@ -1,30 +1,15 @@
 # gemma-rs (port in progress)
 
-This is a Rust port scaffold of `gemma.cpp`.
+Rust port of `gemma.cpp`, with CPU and optional CUDA backends.
 
-## Status
+## Quick links
+- **User guide (recommended):** `docs/USER_GUIDE.md`
+- **Porting notes:** `docs/PORTING_PLAN.md`
 
-- Core IO, serialization, utilities, ops: in place (baseline scalar).
-- Compression: placeholder codecs (not bit-compatible yet).
-- Model config, tensor registry, model store, weights: in place (minimal).
-- Tokenizer: kitoken-based, parity test harness exists (requires gemma.cpp + SBS).
-- CLI: supports encode/decode + stubbed generation.
-- Frontends (API server/client, C API), benchmarks: placeholders.
+## Fast start
+- Build CPU: `cargo build --offline`
+- Build CUDA CLI: `cargo build -p gemma-cli --features cuda`
+- Chat: `cargo run -p gemma-cli -- --chat --stream --weights path/to/weights.sbs`
+- Bench: `cargo run -p gemma-cli -- --bench --device cuda --weights path/to/weights.sbs`
 
-## Build
-
-```sh
-cargo build --offline
-```
-
-## Tests
-
-```sh
-cargo test --offline
-```
-
-## CLI
-
-```sh
-cargo run -p gemma-cli -- "hello world" [vocab_file]
-```
+Run `cargo run -p gemma-cli -- --help` for full flags.
