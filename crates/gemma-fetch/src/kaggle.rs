@@ -26,6 +26,7 @@ enum KaggleAuth {
 // Newer Kaggle "API Token" (from account page) is used as:
 // Authorization: KaggleToken <token>
 const KAGGLE_BEARER_SCHEME: &str = "KaggleToken";
+const KAGGLE_HEADER: &str = "X-Kaggle-Authorization";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct KaggleModel {
@@ -246,7 +247,9 @@ pub fn download_model(
 fn send_with_auth(builder: reqwest::blocking::RequestBuilder, auth: &KaggleAuth) -> Result<reqwest::blocking::Response> {
     let builder = match auth {
         KaggleAuth::Basic { username, key } => builder.basic_auth(username, Some(key)),
-        KaggleAuth::Bearer { token } => builder.header(AUTHORIZATION, format!("{KAGGLE_BEARER_SCHEME} {token}")),
+        KaggleAuth::Bearer { token } => builder
+            .header(AUTHORIZATION, format!("{KAGGLE_BEARER_SCHEME} {token}"))
+            .header(KAGGLE_HEADER, format!("{KAGGLE_BEARER_SCHEME} {token}")),
     };
     let retry_clone = if matches!(auth, KaggleAuth::Bearer { .. }) {
         builder.try_clone()
