@@ -90,35 +90,14 @@ fn load_auth() -> Result<KaggleAuth> {
     let _ = dotenvy::dotenv();
 
     if let Some(tok) = env_var("KAGGLE_API_TOKEN").or_else(|| env_var("KAGGLE_TOKEN")) {
-        // Accept "username:key" or JSON {"username": "...", "key": "..."}
-        if let Some((u, k)) = tok.split_once(':') {
-            return Ok(KaggleAuth::Basic {
-                username: u.to_string(),
-                key: k.to_string(),
-            });
-        }
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&tok) {
-            let username = v
-                .get("username")
-                .and_then(|x| x.as_str())
-                .ok_or_else(|| FetchError::Auth("KAGGLE_API_TOKEN missing username".into()))?;
-            let key = v
-                .get("key")
-                .and_then(|x| x.as_str())
-                .ok_or_else(|| FetchError::Auth("KAGGLE_API_TOKEN missing key".into()))?;
-            return Ok(KaggleAuth::Basic {
-                username: username.to_string(),
-                key: key.to_string(),
-            });
-        }
-        // If token is only the key, allow username from env.
-        if let Ok(u) = std::env::var("KAGGLE_USERNAME") {
+        // Preferred: bearer API token.
+        // If a username is supplied alongside, also allow basic with token-as-key (matches UI curl).
+        if let Some(u) = env_var("KAGGLE_USERNAME") {
             return Ok(KaggleAuth::Basic {
                 username: u,
                 key: tok,
             });
         }
-        // Otherwise treat as bearer PAT.
         return Ok(KaggleAuth::Bearer { token: tok });
     }
 
