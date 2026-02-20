@@ -89,9 +89,8 @@ fn load_auth() -> Result<KaggleAuth> {
     // Best-effort .env load so callers don't have to do it explicitly.
     let _ = dotenvy::dotenv();
 
-    if let Some(tok) = env_var("KAGGLE_API_TOKEN").or_else(|| env_var("KAGGLE_TOKEN")) {
-        return Ok(KaggleAuth::Bearer { token: tok });
-    }
+    // Prefer basic creds if present (kaggle.json or env), fall back to API token.
+    // This matches the behavior of Kaggle UI download snippets.
 
     // Look for kaggle.json in cwd.
     let kaggle_json_path = std::path::Path::new("kaggle.json");
@@ -115,8 +114,12 @@ fn load_auth() -> Result<KaggleAuth> {
         return Ok(KaggleAuth::Basic { username: u, key: k });
     }
 
+    if let Some(tok) = env_var("KAGGLE_API_TOKEN").or_else(|| env_var("KAGGLE_TOKEN")) {
+        return Ok(KaggleAuth::Bearer { token: tok });
+    }
+
     Err(FetchError::Auth(
-        "set KAGGLE_API_TOKEN (preferred) or provide username/key in kaggle.json or KAGGLE_USERNAME/KAGGLE_KEY".into(),
+        "provide kaggle.json or KAGGLE_USERNAME/KAGGLE_KEY, or set KAGGLE_API_TOKEN".into(),
     ))
 }
 
