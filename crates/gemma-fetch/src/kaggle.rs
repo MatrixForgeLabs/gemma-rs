@@ -60,6 +60,33 @@ impl KaggleHandle {
 }
 
 fn load_creds() -> Result<KaggleCreds> {
+    if let Ok(tok) = std::env::var("KAGGLE_API_TOKEN") {
+        // Accept "username:key" or JSON {"username": "...", "key": "..."}
+        if let Some((u, k)) = tok.split_once(':') {
+            return Ok(KaggleCreds {
+                username: u.to_string(),
+                key: k.to_string(),
+            });
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&tok) {
+            let username = v
+                .get("username")
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| FetchError::Auth("KAGGLE_API_TOKEN missing username".into()))?;
+            let key = v
+                .get("key")
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| FetchError::Auth("KAGGLE_API_TOKEN missing key".into()))?;
+            return Ok(KaggleCreds {
+                username: username.to_string(),
+                key: key.to_string(),
+            });
+        }
+        return Err(FetchError::Auth(
+            "KAGGLE_API_TOKEN must be username:key or JSON with username/key".into(),
+        ));
+    }
+
     if let (Ok(u), Ok(k)) = (
         std::env::var("KAGGLE_USERNAME"),
         std::env::var("KAGGLE_KEY"),

@@ -17,6 +17,9 @@ Env:
 }
 
 fn main() {
+    // Load .env if present for tokens/keys.
+    let _ = dotenvy::dotenv();
+
     let args: Vec<String> = std::env::args().collect();
     if args.len() == 1 || args.iter().any(|a| a == "--help" || a == "-h") {
         print_usage();

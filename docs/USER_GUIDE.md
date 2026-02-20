@@ -51,7 +51,7 @@ Binary: `cargo run -p gemma-fetch -- <options>`
 
 - Download a Kaggle model (latest version):
   ```sh
-  export KAGGLE_USERNAME=... KAGGLE_KEY=...
+  export KAGGLE_USERNAME=... KAGGLE_KEY=...   # or KAGGLE_API_TOKEN="username:key" or ~/.kaggle/kaggle.json
   cargo run -p gemma-fetch -- --kaggle google/gemma-3/gguf/gemma-3-1b-it-qat-q4_0 --out models/
   ```
   Use `--version N` to pin a specific version. Credentials can also live in `~/.kaggle/kaggle.json`.
