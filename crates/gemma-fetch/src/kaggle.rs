@@ -23,6 +23,10 @@ enum KaggleAuth {
     Bearer { token: String },
 }
 
+// Newer Kaggle "API Token" (from account page) is used as:
+// Authorization: KaggleToken <token>
+const KAGGLE_BEARER_SCHEME: &str = "KaggleToken";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct KaggleModel {
     pub owner_slug: String,
@@ -152,17 +156,11 @@ pub fn search_models(query: &str, page_size: usize) -> Result<Vec<KaggleModel>> 
     )
     .map_err(|e| FetchError::Parse(format!("url: {e}")))?;
 
-    let mut req = client()?
+    let req = client()?
         .get(url)
         .header(USER_AGENT, "gemma-rs-fetch/0.1");
-    req = match auth {
-        KaggleAuth::Basic { username, key } => req.basic_auth(username, Some(key)),
-        KaggleAuth::Bearer { token } => req.header(AUTHORIZATION, format!("Bearer {token}")),
-    };
 
-    let resp = req
-        .send()
-        .map_err(|e| FetchError::Network(format!("kaggle search: {e}")))?;
+    let resp = send_with_auth(req, &auth)?;
 
     if resp.status().is_success() {
         resp.json::<Vec<KaggleModel>>()
@@ -195,22 +193,16 @@ pub fn download_model(
     };
     let url = Url::parse(&base).map_err(|e| FetchError::Parse(format!("url: {e}")))?;
 
-    let mut req = client()?
+    let req = client()?
         .get(url)
         .header(USER_AGENT, "gemma-rs-fetch/0.1");
-    req = match auth {
-        KaggleAuth::Basic { username, key } => req.basic_auth(username, Some(key)),
-        KaggleAuth::Bearer { token } => req.header(AUTHORIZATION, format!("Bearer {token}")),
-    };
 
-    let mut resp = req
-        .send()
-        .map_err(|e| FetchError::Network(format!("kaggle download: {e}")))?;
+    let mut resp = send_with_auth(req, &auth)?;
 
     let status = resp.status();
     if status == reqwest::StatusCode::UNAUTHORIZED {
         return Err(FetchError::Auth(
-            "kaggle: check KAGGLE_USERNAME/KAGGLE_KEY or kaggle.json".into(),
+            "kaggle: check KAGGLE_API_TOKEN (or KAGGLE_TOKEN), KAGGLE_USERNAME/KAGGLE_KEY, or kaggle.json".into(),
         ));
     }
     if status == reqwest::StatusCode::NOT_FOUND {
@@ -247,4 +239,31 @@ pub fn download_model(
 
     write_stream_to_path(&mut resp, &dest)?;
     Ok(dest)
+}
+fn send_with_auth(builder: reqwest::blocking::RequestBuilder, auth: &KaggleAuth) -> Result<reqwest::blocking::Response> {
+    let builder = match auth {
+        KaggleAuth::Basic { username, key } => builder.basic_auth(username, Some(key)),
+        KaggleAuth::Bearer { token } => builder.header(AUTHORIZATION, format!("{KAGGLE_BEARER_SCHEME} {token}")),
+    };
+    let retry_clone = if matches!(auth, KaggleAuth::Bearer { .. }) {
+        builder.try_clone()
+    } else {
+        None
+    };
+
+    let resp = builder
+        .send()
+        .map_err(|e| FetchError::Network(format!("kaggle request: {e}")))?;
+
+    // If bearer with KaggleToken fails 401, retry with plain Bearer to be compatible with older servers.
+    if matches!(auth, KaggleAuth::Bearer { .. }) && resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        if let Some(clone) = retry_clone {
+            let retry_resp = clone
+                .header(AUTHORIZATION, format!("Bearer {}", match auth { KaggleAuth::Bearer { token } => token, _ => unreachable!() }))
+                .send()
+                .map_err(|e| FetchError::Network(format!("kaggle retry: {e}")))?;
+            return Ok(retry_resp);
+        }
+    }
+    Ok(resp)
 }
