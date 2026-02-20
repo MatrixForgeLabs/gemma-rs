@@ -445,10 +445,10 @@ fn generate_gpu_tokens_with_cache<B: Backend>(
                         eprintln!("{reason}");
                     }
                     scratch.logits.resize(full.embedding.rows(), 0.0);
-                    if let Err(e) = gpu.backend.download_f32(
-                        logits_buf,
-                        &mut scratch.logits[..full.embedding.rows()],
-                    ) {
+                    if let Err(e) = gpu
+                        .backend
+                        .download_f32(logits_buf, &mut scratch.logits[..full.embedding.rows()])
+                    {
                         eprintln!("GPU logits download failed, falling back to CPU logits: {e}");
                         compute_logits_cpu(full, model, &hidden, &mut scratch.logits);
                     }

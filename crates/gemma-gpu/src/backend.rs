@@ -192,7 +192,11 @@ pub trait Backend: Send + Sync + Sized {
 
     /// Optional argmax that writes intermediate maxima to a provided scratch buffer.
     /// Implementations may ignore the scratch buffer and fall back to `argmax`.
-    fn argmax_with_scratch(&self, buf: &Self::Buf, _scratch: Option<&mut Self::Buf>) -> Result<usize> {
+    fn argmax_with_scratch(
+        &self,
+        buf: &Self::Buf,
+        _scratch: Option<&mut Self::Buf>,
+    ) -> Result<usize> {
         self.argmax(buf)
     }
 

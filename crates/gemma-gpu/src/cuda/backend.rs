@@ -537,25 +537,26 @@ impl Backend for CudaBackend {
         let threads = 256u32;
         let blocks = ((n as u32 + threads - 1) / threads) as usize;
         let mut scratch_guard = self.reduce_scratch.lock().unwrap();
-        if scratch_guard
-            .as_ref()
-            .map_or(true, |s| s.len < blocks)
-        {
-            let vals = self
-                .stream
-                .alloc_zeros::<f32>(blocks)
-                .map_err(|_| BackendError::OutOfMemory {
-                    requested: blocks * std::mem::size_of::<f32>(),
-                    available: self.caps.free_memory,
-                })?;
-            let idx = self
-                .stream
-                .alloc_zeros::<i32>(blocks)
-                .map_err(|_| BackendError::OutOfMemory {
-                    requested: blocks * std::mem::size_of::<i32>(),
-                    available: self.caps.free_memory,
-                })?;
-            *scratch_guard = Some(ReduceScratch { vals, idx, len: blocks });
+        if scratch_guard.as_ref().map_or(true, |s| s.len < blocks) {
+            let vals =
+                self.stream
+                    .alloc_zeros::<f32>(blocks)
+                    .map_err(|_| BackendError::OutOfMemory {
+                        requested: blocks * std::mem::size_of::<f32>(),
+                        available: self.caps.free_memory,
+                    })?;
+            let idx =
+                self.stream
+                    .alloc_zeros::<i32>(blocks)
+                    .map_err(|_| BackendError::OutOfMemory {
+                        requested: blocks * std::mem::size_of::<i32>(),
+                        available: self.caps.free_memory,
+                    })?;
+            *scratch_guard = Some(ReduceScratch {
+                vals,
+                idx,
+                len: blocks,
+            });
         }
 
         let scratch = scratch_guard.as_mut().unwrap();

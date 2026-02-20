@@ -46,6 +46,28 @@ Comprehensive instructions for building, running, and benchmarking the Rust port
   cargo run -p gemma-cli -- --weights path/to/weights.sbs --print-backend
   ```
 
+## 3b) Model downloaders (Hugging Face & Kaggle)
+Binary: `cargo run -p gemma-fetch -- <options>`
+
+- Download a Kaggle model (latest version):
+  ```sh
+  export KAGGLE_USERNAME=... KAGGLE_KEY=...
+  cargo run -p gemma-fetch -- --kaggle google/gemma-3/gguf/gemma-3-1b-it-qat-q4_0 --out models/
+  ```
+  Use `--version N` to pin a specific version. Credentials can also live in `~/.kaggle/kaggle.json`.
+
+- Download a Hugging Face file:
+  ```sh
+  export HF_TOKEN=your_token   # optional for public repos
+  cargo run -p gemma-fetch -- --hf-repo google/gemma-3 --hf-file gguf/gemma-3-1b-it-q4_0.gguf --out models/
+  ```
+
+- Search:
+  ```sh
+  cargo run -p gemma-fetch -- --search-hf gemma --limit 10
+  cargo run -p gemma-fetch -- --search-kaggle gemma --limit 10
+  ```
+
 ### Sampling flags
 `--temperature`, `--top-k`, `--top-p`, `--seed` control generation. Defaults: temp = 1.0, top‑k = 1, top‑p = 1.0.
 

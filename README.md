@@ -5,6 +5,7 @@ Rust port of `gemma.cpp`, with CPU and optional CUDA backends.
 ## Quick links
 - **User guide (recommended):** `docs/USER_GUIDE.md`
 - **Porting notes:** `docs/PORTING_PLAN.md`
+- **Model fetcher (HF/Kaggle):** `cargo run -p gemma-fetch -- --help`
 
 ## Fast start
 - Build CPU: `cargo build --offline`
