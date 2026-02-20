@@ -1,0 +1,21 @@
+[package]
+name = "gemma-core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+gemma-util = { path = "../gemma-util" }
+gemma-io = { path = "../gemma-io" }
+gemma-ops = { path = "../gemma-ops" }
+gemma-compression = { path = "../gemma-compression" }
+gemma-gpu = { path = "../gemma-gpu", optional = true }
+half = { workspace = true }
+kitoken = { version = "0.10.1", features = ["convert-sentencepiece"] }
+
+[features]
+default = []
+gpu = ["dep:gemma-gpu"]
+
+[dev-dependencies]
+gemma-threading = { path = "../gemma-threading" }

@@ -1,0 +1,10 @@
+[package]
+name = "gemma-ops"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+half = { workspace = true }
+gemma-compression = { path = "../gemma-compression" }
+rayon = { workspace = true }

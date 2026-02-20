@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/gemma-util",
+  "crates/gemma-io",
+  "crates/gemma-ops",
+  "crates/gemma-compression",
+  "crates/gemma-core",
+  "crates/gemma-cli",
+  "crates/gemma-threading",
+  "crates/gemma-evals",
+  "crates/gemma-gpu",
+]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+
+[workspace.dependencies]
+half = "2.4"
+getrandom = "0.2"
+memmap2 = "0.9"
+libc = "0.2"
+rayon = "1.10"
+num_cpus = "1.16"
+thiserror = "2"

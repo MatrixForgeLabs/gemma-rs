@@ -1,0 +1,102 @@
+name: text-parity
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/gemma-core/**"
+      - "crates/gemma-cli/**"
+      - "crates/gemma-evals/**"
+      - "scripts/parity/**"
+      - ".github/workflows/parity.yml"
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/gemma-core/**"
+      - "crates/gemma-cli/**"
+      - "crates/gemma-evals/**"
+      - "scripts/parity/**"
+      - ".github/workflows/parity.yml"
+
+jobs:
+  text-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      SBS_PATH: gemma-3-gemmacpp-3.0-270m-it-sfp-v1/270m-sfp-it.sbs
+      REPORT_PATH: reports/parity/ci-text-parity.md
+      SAMPLING_REPORT_PATH: reports/parity/ci-sampling-envelope.md
+      CPP_DIR: gemma.cpp-ref
+      CPP_BUILD_DIR: /tmp/gemma-cpp-build-rust-parity
+      CPP_BIN: /tmp/gemma-cpp-build-rust-parity/gemma
+
+    steps:
+      - name: Checkout gemma-rs
+        uses: actions/checkout@v4
+
+      - name: Checkout gemma.cpp reference
+        uses: actions/checkout@v4
+        with:
+          repository: google/gemma.cpp
+          path: gemma.cpp-ref
+
+      - name: Install C++ build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential
+
+      - name: Build gemma.cpp CLI
+        run: |
+          cmake -S "$CPP_DIR" -B "$CPP_BUILD_DIR" \
+            -G Ninja \
+            -DSPM_ENABLE_SHARED=OFF \
+            -DSPM_ABSL_PROVIDER=module \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+            -DCMAKE_CXX_FLAGS=-DHWY_BROKEN_AVX10_2=HWY_AVX10_2
+          cmake --build "$CPP_BUILD_DIR" --target gemma -j
+
+      - name: Validate required model files
+        run: |
+          test -f "$SBS_PATH" || { echo "Missing model file: $SBS_PATH"; exit 74; }
+
+      - name: Run Rust vs C++ text parity
+        run: |
+          cargo run -q -p gemma-evals -- \
+            --weights "$SBS_PATH" \
+            --prompts scripts/parity/prompts.txt \
+            --cpp-bin "$CPP_BIN" \
+            --report "$REPORT_PATH" \
+            --max-tokens 32 \
+            --temperature 1.0 \
+            --top-k 1 \
+            --top-p 1.0
+
+      - name: Run sampling compatibility envelope
+        run: |
+          MIN_EXACT_MATCH_RATE=0.35 \
+          MAX_TOKENS=24 \
+          CPP_BUILD_IF_MISSING=0 \
+          GEMMA_CPP_BIN="$CPP_BIN" \
+          GEMMA_SBS_PATH="$SBS_PATH" \
+          scripts/parity/run_sampling_envelope.sh
+          cp reports/parity/sampling-envelope-latest.md "$SAMPLING_REPORT_PATH"
+
+      - name: Upload parity report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: text-parity-report
+          path: reports/parity/ci-text-parity.md
+          if-no-files-found: warn
+
+      - name: Upload sampling envelope artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sampling-envelope-report
+          path: reports/parity/ci-sampling-envelope.md
+          if-no-files-found: warn

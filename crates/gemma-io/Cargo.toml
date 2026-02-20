@@ -1,0 +1,9 @@
+[package]
+name = "gemma-io"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+memmap2 = { workspace = true }
+gemma-threading = { path = "../gemma-threading" }

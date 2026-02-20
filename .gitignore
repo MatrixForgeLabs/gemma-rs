@@ -1,0 +1,8 @@
+/target
+
+# Model weights & archives
+*.sbs
+*.tar.gz
+
+# Claude Code temp files
+.claude/

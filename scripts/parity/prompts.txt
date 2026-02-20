@@ -1,0 +1,5 @@
+Hello
+Write one sentence about rust programming.
+What is 2 + 2?
+List three colors.
+Explain recursion in one short sentence.

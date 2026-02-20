@@ -1,0 +1,23 @@
+[package]
+name = "gemma-gpu"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gemma-compression = { path = "../gemma-compression" }
+gemma-ops = { path = "../gemma-ops" }
+half.workspace = true
+thiserror.workspace = true
+
+[dependencies.cudarc]
+version = "0.19"
+optional = true
+features = ["std", "cublas", "nvrtc", "driver", "cuda-12090"]
+
+[features]
+default = []
+cuda = ["dep:cudarc"]
+
+[dev-dependencies]
+gemma-compression = { path = "../gemma-compression" }

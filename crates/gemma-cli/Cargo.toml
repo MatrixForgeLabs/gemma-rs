@@ -1,0 +1,14 @@
+[package]
+name = "gemma-cli"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+gemma-core = { path = "../gemma-core" }
+gemma-gpu = { path = "../gemma-gpu", optional = true }
+
+[features]
+default = []
+gpu = ["gemma-core/gpu", "dep:gemma-gpu"]
+cuda = ["gpu", "gemma-gpu/cuda"]

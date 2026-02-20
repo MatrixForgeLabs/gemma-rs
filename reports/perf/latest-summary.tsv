@@ -1,0 +1,5 @@
+metric	ns_per_iter
+flash_attention_causal	25798.1
+decode_argmax_surrogate	154212758.0
+matmul_f32_64x64x64	52692.7
+matvec_dispatch_f32_4096x2048	4394943.0

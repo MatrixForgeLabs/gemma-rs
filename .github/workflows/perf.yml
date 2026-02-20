@@ -1,0 +1,33 @@
+name: perf-regression
+
+on:
+  workflow_dispatch:
+
+jobs:
+  perf-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run perf baseline with regression gate
+        run: |
+          GEMMA_PERF_ITERS_CORE=8000 \
+          GEMMA_PERF_ITERS_OPS=300 \
+          GEMMA_PERF_COMPARE_TO=reports/perf/baseline-20260218T115321Z.md \
+          GEMMA_PERF_MAX_REGRESSION_PCT=12 \
+          scripts/perf/run_baseline.sh
+
+      - name: Upload perf artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-reports
+          path: |
+            reports/perf/latest.md
+            reports/perf/latest-summary.tsv
