@@ -195,7 +195,13 @@ pub fn download_model(
     dest_dir: &Path,
 ) -> Result<PathBuf> {
     let auth = load_auth()?;
-    let version = version_override.or(handle.version);
+    let mut version = version_override.or(handle.version);
+    // If no version specified, attempt to discover latest version.
+    if version.is_none() {
+        if let Some(v) = latest_version(&auth, handle)? {
+            version = Some(v);
+        }
+    }
     let base = if let Some(v) = version {
         format!(
             "{KAGGLE_API}/models/{}/{}/{}/{}/versions/{}/download",
@@ -208,6 +214,8 @@ pub fn download_model(
         )
     };
     let url = Url::parse(&base).map_err(|e| FetchError::Parse(format!("url: {e}")))?;
+
+    eprintln!("Kaggle download: {}", url);
 
     let req = client()?
         .get(url)
@@ -255,6 +263,37 @@ pub fn download_model(
 
     write_stream_to_path(&mut resp, &dest)?;
     Ok(dest)
+}
+
+#[derive(serde::Deserialize)]
+struct VersionInfo {
+    #[serde(rename = "versionNumber")]
+    version_number: u32,
+}
+
+fn latest_version(auth: &KaggleAuth, handle: &KaggleHandle) -> Result<Option<u32>> {
+    let url = format!(
+        "{KAGGLE_API}/models/{}/{}/{}/{}/versions",
+        handle.owner, handle.model, handle.framework, handle.variation
+    );
+    let req = client()?.get(url).header(USER_AGENT, "gemma-rs-fetch/0.1");
+    let resp = send_with_auth(req, auth)?;
+    if resp.status().is_success() {
+        let versions: Vec<VersionInfo> = resp
+            .json()
+            .map_err(|e| FetchError::Parse(format!("versions json: {e}")))?;
+        Ok(versions
+            .into_iter()
+            .map(|v| v.version_number)
+            .max())
+    } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        Ok(None)
+    } else {
+        Err(FetchError::Network(format!(
+            "versions query failed: {}",
+            resp.status()
+        )))
+    }
 }
 fn send_with_auth(builder: reqwest::blocking::RequestBuilder, auth: &KaggleAuth) -> Result<reqwest::blocking::Response> {
     let builder = match auth {
