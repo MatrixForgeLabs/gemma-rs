@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use reqwest::blocking::Client;
-use reqwest::header::USER_AGENT;
+use reqwest::header::{AUTHORIZATION, USER_AGENT};
 use serde::Deserialize;
 use url::Url;
 
@@ -15,6 +15,12 @@ const KAGGLE_API: &str = "https://www.kaggle.com/api/v1";
 pub struct KaggleCreds {
     pub username: String,
     pub key: String,
+}
+
+#[derive(Debug, Clone)]
+enum KaggleAuth {
+    Basic { username: String, key: String },
+    Bearer { token: String },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -59,11 +65,15 @@ impl KaggleHandle {
     }
 }
 
-fn load_creds() -> Result<KaggleCreds> {
-    if let Ok(tok) = std::env::var("KAGGLE_API_TOKEN") {
+fn env_var(name: &str) -> Option<String> {
+    std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+fn load_auth() -> Result<KaggleAuth> {
+    if let Some(tok) = env_var("KAGGLE_API_TOKEN").or_else(|| env_var("KAGGLE_TOKEN")) {
         // Accept "username:key" or JSON {"username": "...", "key": "..."}
         if let Some((u, k)) = tok.split_once(':') {
-            return Ok(KaggleCreds {
+            return Ok(KaggleAuth::Basic {
                 username: u.to_string(),
                 key: k.to_string(),
             });
@@ -77,28 +87,27 @@ fn load_creds() -> Result<KaggleCreds> {
                 .get("key")
                 .and_then(|x| x.as_str())
                 .ok_or_else(|| FetchError::Auth("KAGGLE_API_TOKEN missing key".into()))?;
-            return Ok(KaggleCreds {
+            return Ok(KaggleAuth::Basic {
                 username: username.to_string(),
                 key: key.to_string(),
             });
         }
         // If token is only the key, allow username from env.
         if let Ok(u) = std::env::var("KAGGLE_USERNAME") {
-            return Ok(KaggleCreds {
+            return Ok(KaggleAuth::Basic {
                 username: u,
                 key: tok,
             });
         }
-        return Err(FetchError::Auth(
-            "KAGGLE_API_TOKEN set without username; provide KAGGLE_USERNAME or use username:key".into(),
-        ));
+        // Otherwise treat as bearer PAT.
+        return Ok(KaggleAuth::Bearer { token: tok });
     }
 
     if let (Ok(u), Ok(k)) = (
         std::env::var("KAGGLE_USERNAME"),
         std::env::var("KAGGLE_KEY"),
     ) {
-        return Ok(KaggleCreds {
+        return Ok(KaggleAuth::Basic {
             username: u,
             key: k,
         });
@@ -116,14 +125,14 @@ fn load_creds() -> Result<KaggleCreds> {
             .get("key")
             .and_then(|x| x.as_str())
             .ok_or_else(|| FetchError::Auth("kaggle.json missing key".into()))?;
-        return Ok(KaggleCreds {
+        return Ok(KaggleAuth::Basic {
             username: username.to_string(),
             key: key.to_string(),
         });
     }
 
     Err(FetchError::Auth(
-        "set KAGGLE_USERNAME/KAGGLE_KEY or ~/.kaggle/kaggle.json".into(),
+        "set KAGGLE_API_TOKEN, or KAGGLE_USERNAME/KAGGLE_KEY, or ~/.kaggle/kaggle.json".into(),
     ))
 }
 
@@ -136,17 +145,22 @@ fn client() -> Result<Client> {
 
 /// Search Kaggle models (public).
 pub fn search_models(query: &str, page_size: usize) -> Result<Vec<KaggleModel>> {
-    let creds = load_creds()?;
+    let auth = load_auth()?;
     let url = Url::parse_with_params(
         &format!("{KAGGLE_API}/models/list"),
         &[("search", query), ("pageSize", &page_size.to_string())],
     )
     .map_err(|e| FetchError::Parse(format!("url: {e}")))?;
 
-    let resp = client()?
+    let mut req = client()?
         .get(url)
-        .basic_auth(&creds.username, Some(&creds.key))
-        .header(USER_AGENT, "gemma-rs-fetch/0.1")
+        .header(USER_AGENT, "gemma-rs-fetch/0.1");
+    req = match auth {
+        KaggleAuth::Basic { username, key } => req.basic_auth(username, Some(key)),
+        KaggleAuth::Bearer { token } => req.header(AUTHORIZATION, format!("Bearer {token}")),
+    };
+
+    let resp = req
         .send()
         .map_err(|e| FetchError::Network(format!("kaggle search: {e}")))?;
 
@@ -167,7 +181,7 @@ pub fn download_model(
     version: Option<u32>,
     dest_dir: &Path,
 ) -> Result<PathBuf> {
-    let creds = load_creds()?;
+    let auth = load_auth()?;
     let base = if let Some(v) = version {
         format!(
             "{KAGGLE_API}/models/{}/{}/{}/{}/versions/{}/download",
@@ -181,10 +195,15 @@ pub fn download_model(
     };
     let url = Url::parse(&base).map_err(|e| FetchError::Parse(format!("url: {e}")))?;
 
-    let mut resp = client()?
+    let mut req = client()?
         .get(url)
-        .basic_auth(&creds.username, Some(&creds.key))
-        .header(USER_AGENT, "gemma-rs-fetch/0.1")
+        .header(USER_AGENT, "gemma-rs-fetch/0.1");
+    req = match auth {
+        KaggleAuth::Basic { username, key } => req.basic_auth(username, Some(key)),
+        KaggleAuth::Bearer { token } => req.header(AUTHORIZATION, format!("Bearer {token}")),
+    };
+
+    let mut resp = req
         .send()
         .map_err(|e| FetchError::Network(format!("kaggle download: {e}")))?;
 
