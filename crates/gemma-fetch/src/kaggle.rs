@@ -18,8 +18,9 @@ pub struct KaggleCreds {
 }
 
 #[derive(Debug, Clone)]
-struct KaggleAuth {
-    token: String,
+enum KaggleAuth {
+    Bearer { token: String },
+    Basic { username: String, key: String },
 }
 
 // Kaggle token format used by the Models API:
@@ -66,7 +67,7 @@ impl KaggleHandle {
         Ok(Self {
             owner: parts[0].to_string(),
             model: parts[1].to_string(),
-            framework: parts[2].to_string(),
+            framework: parts[2].to_uppercase(), // Kaggle framework slugs are case-sensitive (e.g., GGUF)
             variation: parts[3].to_string(),
             version,
         })
@@ -89,11 +90,33 @@ fn load_auth() -> Result<KaggleAuth> {
     let _ = dotenvy::dotenv();
 
     if let Some(tok) = env_var("KAGGLE_API_TOKEN").or_else(|| env_var("KAGGLE_TOKEN")) {
-        return Ok(KaggleAuth { token: tok });
+        return Ok(KaggleAuth::Bearer { token: tok });
+    }
+
+    // Look for kaggle.json in cwd.
+    let kaggle_json_path = std::path::Path::new("kaggle.json");
+    if kaggle_json_path.exists() {
+        if let Ok(content) = util::read_to_string(&kaggle_json_path.to_path_buf()) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let (Some(u), Some(k)) = (
+                    v.get("username").and_then(|x| x.as_str()),
+                    v.get("key").and_then(|x| x.as_str()),
+                ) {
+                    return Ok(KaggleAuth::Basic {
+                        username: u.to_string(),
+                        key: k.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    if let (Some(u), Some(k)) = (env_var("KAGGLE_USERNAME"), env_var("KAGGLE_KEY")) {
+        return Ok(KaggleAuth::Basic { username: u, key: k });
     }
 
     Err(FetchError::Auth(
-        "set KAGGLE_API_TOKEN (preferred) or KAGGLE_TOKEN".into(),
+        "set KAGGLE_API_TOKEN (preferred) or provide username/key in kaggle.json or KAGGLE_USERNAME/KAGGLE_KEY".into(),
     ))
 }
 
@@ -238,21 +261,31 @@ fn latest_version(auth: &KaggleAuth, handle: &KaggleHandle) -> Result<Option<u32
     }
 }
 fn send_with_auth(builder: reqwest::blocking::RequestBuilder, auth: &KaggleAuth) -> Result<reqwest::blocking::Response> {
-    let builder = builder
-        .bearer_auth(&auth.token)
-        .header(AUTHORIZATION, format!("{KAGGLE_SCHEME} {}", auth.token))
-        .header(KAGGLE_HEADER, format!("{KAGGLE_SCHEME} {}", auth.token));
-    let retry_clone = builder.try_clone();
+    let builder = match auth {
+        KaggleAuth::Bearer { token } => builder
+            .bearer_auth(token)
+            .header(AUTHORIZATION, format!("{KAGGLE_SCHEME} {token}"))
+            .header(KAGGLE_HEADER, format!("{KAGGLE_SCHEME} {token}")),
+        KaggleAuth::Basic { username, key } => builder.basic_auth(username, Some(key)),
+    };
+    let retry_clone = if matches!(auth, KaggleAuth::Bearer { .. }) {
+        builder.try_clone()
+    } else {
+        None
+    };
 
     let resp = builder
         .send()
         .map_err(|e| FetchError::Network(format!("kaggle request: {e}")))?;
 
     // If bearer with KaggleToken fails 401, retry with plain Bearer to be compatible with older servers.
-    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+    if matches!(auth, KaggleAuth::Bearer { .. }) && resp.status() == reqwest::StatusCode::UNAUTHORIZED {
         if let Some(clone) = retry_clone {
             let retry_resp = clone
-                .header(AUTHORIZATION, format!("Bearer {}", auth.token))
+                .header(AUTHORIZATION, match auth {
+                    KaggleAuth::Bearer { token } => format!("Bearer {token}"),
+                    _ => unreachable!(),
+                })
                 .send()
                 .map_err(|e| FetchError::Network(format!("kaggle retry: {e}")))?;
             return Ok(retry_resp);
