@@ -82,8 +82,15 @@ fn load_creds() -> Result<KaggleCreds> {
                 key: key.to_string(),
             });
         }
+        // If token is only the key, allow username from env.
+        if let Ok(u) = std::env::var("KAGGLE_USERNAME") {
+            return Ok(KaggleCreds {
+                username: u,
+                key: tok,
+            });
+        }
         return Err(FetchError::Auth(
-            "KAGGLE_API_TOKEN must be username:key or JSON with username/key".into(),
+            "KAGGLE_API_TOKEN set without username; provide KAGGLE_USERNAME or use username:key".into(),
         ));
     }
 
