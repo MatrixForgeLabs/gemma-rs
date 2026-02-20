@@ -4,6 +4,7 @@ use gemma_core::configs::ModelConfig;
 use gemma_core::gemma::Gemma;
 
 #[test]
+#[ignore = "Requires local Gemma SBS weights; long-running"]
 fn minimal_inference_runs() {
     let sbs_path = if let Ok(val) = std::env::var("GEMMA_SBS_PATH") {
         PathBuf::from(val)
@@ -23,6 +24,7 @@ fn minimal_inference_runs() {
 }
 
 #[test]
+#[ignore = "Requires local Gemma SBS weights; perf gated"]
 fn minimal_inference_perf_sanity() {
     if std::env::var("GEMMA_PERF_CHECK").ok().as_deref() != Some("1") {
         eprintln!("GEMMA_PERF_CHECK not set; skipping perf sanity test");
@@ -57,6 +59,7 @@ fn minimal_inference_perf_sanity() {
 }
 
 #[test]
+#[ignore = "Requires local Gemma SBS weights; perf gated"]
 fn full_forward_perf_sanity() {
     if std::env::var("GEMMA_PERF_CHECK").ok().as_deref() != Some("1") {
         eprintln!("GEMMA_PERF_CHECK not set; skipping full forward perf test");

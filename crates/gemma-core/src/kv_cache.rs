@@ -1,8 +1,8 @@
 //! Scalar KV cache for autoregressive decoding.
 
 pub struct KVCache {
-    k: Vec<f32>,
-    v: Vec<f32>,
+    /// Interleaved storage: K followed by V for each (position, head).
+    data: Vec<f32>,
     max_seq_len: usize,
     kv_heads: usize,
     head_dim: usize,
@@ -15,10 +15,10 @@ impl KVCache {
         let size = max_seq_len
             .checked_mul(kv_heads)
             .and_then(|n| n.checked_mul(head_dim))
+            .and_then(|n| n.checked_mul(2))
             .expect("KV cache size overflow");
         Self {
-            k: vec![0.0; size],
-            v: vec![0.0; size],
+            data: vec![0.0; size],
             max_seq_len,
             kv_heads,
             head_dim,
@@ -59,18 +59,20 @@ impl KVCache {
             .max(pos.saturating_add(1))
             .min(self.max_seq_len);
         let pos_mod = pos % self.max_seq_len;
-        let base = (pos_mod * self.kv_heads + kv_head) * self.head_dim;
-        let dst = if dst_is_k { &mut self.k } else { &mut self.v };
-        dst[base..base + self.head_dim].copy_from_slice(src);
+        let base = (pos_mod * self.kv_heads + kv_head) * self.head_dim * 2;
+        let offset = if dst_is_k { 0 } else { self.head_dim };
+        let dst = &mut self.data;
+        dst[base + offset..base + offset + self.head_dim].copy_from_slice(src);
     }
 
     fn read(&self, pos: usize, kv_head: usize, src_is_k: bool) -> &[f32] {
         assert!(kv_head < self.kv_heads, "KV head out of bounds");
 
         let pos_mod = pos % self.max_seq_len;
-        let base = (pos_mod * self.kv_heads + kv_head) * self.head_dim;
-        let src = if src_is_k { &self.k } else { &self.v };
-        &src[base..base + self.head_dim]
+        let base = (pos_mod * self.kv_heads + kv_head) * self.head_dim * 2;
+        let offset = if src_is_k { 0 } else { self.head_dim };
+        let src = &self.data;
+        &src[base + offset..base + offset + self.head_dim]
     }
 }
 

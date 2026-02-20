@@ -29,4 +29,9 @@ impl Tokenizer {
             Err(_) => String::new(),
         }
     }
+
+    #[cfg(test)]
+    pub fn from_kitoken(inner: kitoken::Kitoken) -> Self {
+        Self { inner }
+    }
 }

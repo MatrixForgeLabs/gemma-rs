@@ -98,15 +98,26 @@ pub fn matvec_dispatch(
         Type::F32 => {
             let b = cast_slice::<f32>(b_packed);
             assert_eq!(b.len(), rows * cols);
-            if rows >= 64 {
-                y.par_iter_mut().enumerate().for_each(|(r, out)| {
-                    let row = &b[r * cols..(r + 1) * cols];
-                    *out = dot_row(row, x);
-                });
-            } else {
-                for r in 0..rows {
-                    let row = &b[r * cols..(r + 1) * cols];
-                    y[r] = dot_row(row, x);
+            #[cfg(feature = "blas")]
+            {
+                // C (rows x 1) = A(rows x cols) * B(cols x 1)
+                let m = rows as isize;
+                let k = cols as isize;
+                // matrixmultiply is row-major: row stride is number of columns.
+                matrixmultiply::sgemm(m, k, 1, 1.0, b, k, 1, x, 1, k, 0.0, y, 1, rows as isize);
+            }
+            #[cfg(not(feature = "blas"))]
+            {
+                if rows >= 64 {
+                    y.par_iter_mut().enumerate().for_each(|(r, out)| {
+                        let row = &b[r * cols..(r + 1) * cols];
+                        *out = dot_row(row, x);
+                    });
+                } else {
+                    for r in 0..rows {
+                        let row = &b[r * cols..(r + 1) * cols];
+                        y[r] = dot_row(row, x);
+                    }
                 }
             }
         }

@@ -20,6 +20,7 @@ pub(crate) struct CudaKernels {
     #[allow(dead_code)]
     pub decompress_sfp: CudaFunction,
     pub matvec_f32: CudaFunction,
+    pub reduce_block_max: CudaFunction,
 }
 
 impl CudaKernels {
@@ -35,6 +36,7 @@ impl CudaKernels {
         let elementwise_src = include_str!("elementwise.cu");
         let decompress_src = include_str!("decompress.cu");
         let matvec_src = include_str!("matvec.cu");
+        let reduce_src = include_str!("reduce_max.cu");
 
         let compile_and_load = |cu_src: &str, name: &str| -> Result<CudaFunction> {
             let ptx = compile_ptx(cu_src)
@@ -56,6 +58,7 @@ impl CudaKernels {
             scale_inplace: compile_and_load(elementwise_src, "scale_inplace")?,
             decompress_sfp: compile_and_load(decompress_src, "decompress_sfp")?,
             matvec_f32: compile_and_load(matvec_src, "matvec_f32")?,
+            reduce_block_max: compile_and_load(reduce_src, "reduce_block_max")?,
         })
     }
 }

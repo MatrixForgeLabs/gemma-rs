@@ -3,7 +3,7 @@
 //! On GPUs where cuBLAS supports the architecture (Volta+), cuBLAS SGEMV
 //! is used for matvec. On older GPUs (Pascal), a custom CUDA kernel is used.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use cudarc::driver::result;
 use cudarc::driver::safe::{CudaContext, CudaSlice, CudaStream, LaunchConfig};
@@ -13,11 +13,17 @@ use gemma_compression::types::Type;
 
 use super::buffers::{CudaBuffer, CudaWeightBuffer, WeightStorage};
 use super::kernels::CudaKernels;
-use crate::backend::{Backend, BackendError, DeviceCaps, OpKind, Result};
+use crate::backend::{Backend, BackendError, Buffer, DeviceCaps, OpKind, Result};
 
 /// Optional cuBLAS handle — not available on Pascal with CUDA 13.x.
 #[cfg(feature = "cuda")]
 type OptionalBlas = Option<cudarc::cublas::safe::CudaBlas>;
+
+struct ReduceScratch {
+    vals: CudaSlice<f32>,
+    idx: CudaSlice<i32>,
+    len: usize,
+}
 
 /// CUDA backend for GPU-accelerated inference.
 ///
@@ -30,6 +36,7 @@ pub struct CudaBackend {
     blas: OptionalBlas,
     kernels: CudaKernels,
     caps: DeviceCaps,
+    reduce_scratch: Mutex<Option<ReduceScratch>>,
 }
 
 // SAFETY: CudaBackend fields are all internally thread-safe.
@@ -94,6 +101,7 @@ impl CudaBackend {
             blas,
             kernels,
             caps,
+            reduce_scratch: Mutex::new(None),
         })
     }
 
@@ -507,6 +515,93 @@ impl Backend for CudaBackend {
             .synchronize()
             .map_err(|e| BackendError::DeviceError(format!("synchronize: {e}")))?;
         Ok(())
+    }
+
+    fn argmax(&self, buf: &Self::Buf) -> Result<usize> {
+        self.argmax_with_scratch(buf, None)
+    }
+
+    fn argmax_with_scratch(
+        &self,
+        buf: &Self::Buf,
+        _scratch: Option<&mut Self::Buf>,
+    ) -> Result<usize> {
+        let n = buf.len();
+        if n == 0 {
+            return Err(BackendError::Unsupported(
+                "argmax on empty buffer".to_string(),
+            ));
+        }
+
+        // Allocate (or reuse) a single scratch pair sized to the block count.
+        let threads = 256u32;
+        let blocks = ((n as u32 + threads - 1) / threads) as usize;
+        let mut scratch_guard = self.reduce_scratch.lock().unwrap();
+        if scratch_guard
+            .as_ref()
+            .map_or(true, |s| s.len < blocks)
+        {
+            let vals = self
+                .stream
+                .alloc_zeros::<f32>(blocks)
+                .map_err(|_| BackendError::OutOfMemory {
+                    requested: blocks * std::mem::size_of::<f32>(),
+                    available: self.caps.free_memory,
+                })?;
+            let idx = self
+                .stream
+                .alloc_zeros::<i32>(blocks)
+                .map_err(|_| BackendError::OutOfMemory {
+                    requested: blocks * std::mem::size_of::<i32>(),
+                    available: self.caps.free_memory,
+                })?;
+            *scratch_guard = Some(ReduceScratch { vals, idx, len: blocks });
+        }
+
+        let scratch = scratch_guard.as_mut().unwrap();
+        let n_i32 = n as i32;
+        let cfg = LaunchConfig {
+            grid_dim: (blocks as u32, 1, 1),
+            block_dim: (threads, 1, 1),
+            shared_mem_bytes: 0,
+        };
+
+        unsafe {
+            self.stream
+                .launch_builder(&self.kernels.reduce_block_max)
+                .arg(&buf.data)
+                .arg(&n_i32)
+                .arg(&mut scratch.vals)
+                .arg(&mut scratch.idx)
+                .launch(cfg)
+                .map_err(|e| BackendError::KernelError(format!("reduce_block_max: {e}")))?;
+        }
+
+        // Ensure kernel completion before copying block maxima back.
+        self.stream
+            .synchronize()
+            .map_err(|e| BackendError::DeviceError(format!("argmax sync: {e}")))?;
+
+        let mut block_vals = vec![0.0f32; blocks];
+        let mut block_idx = vec![0i32; blocks];
+        self.stream
+            .memcpy_dtoh(&scratch.vals, &mut block_vals)
+            .map_err(|e| BackendError::TransferError(format!("argmax dtoh vals: {e}")))?;
+        self.stream
+            .memcpy_dtoh(&scratch.idx, &mut block_idx)
+            .map_err(|e| BackendError::TransferError(format!("argmax dtoh idx: {e}")))?;
+
+        let mut best = 0usize;
+        let mut best_val = f32::NEG_INFINITY;
+        for b in 0..blocks {
+            let v = block_vals[b];
+            let i = block_idx[b];
+            if i >= 0 && v > best_val {
+                best_val = v;
+                best = i as usize;
+            }
+        }
+        Ok(best)
     }
 
     fn supports_op(&self, op: OpKind) -> bool {

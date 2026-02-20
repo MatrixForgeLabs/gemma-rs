@@ -44,6 +44,8 @@ pub struct GpuBuffers<B: Backend> {
     pub ff_hidden_buf: B::Buf,
     /// Output buffer for linear_w (model_dim elements).
     pub linear_out_buf: B::Buf,
+    /// Logits buffer (vocab elements) when sampling on GPU.
+    pub logits_buf: Option<B::Buf>,
 }
 
 /// GPU-accelerated model holding uploaded weights and scratch buffers.
@@ -53,8 +55,46 @@ pub struct GpuModel<B: Backend> {
     pub layers: Vec<Option<GpuLayerWeights<B>>>,
     /// Pre-allocated scratch buffers for GPU matvec operations.
     pub bufs: GpuBuffers<B>,
+    /// Optional GPU-resident embedding matrix for logits matvec.
+    pub embedding_wgt: Option<B::Wgt>,
     /// How many layers have GPU-resident weights.
     gpu_layer_count: usize,
+    /// Whether to attempt GPU logits (softmax still on host).
+    gpu_logits_enabled: bool,
+}
+
+struct GpuDecodeScratch {
+    norm_scale: Vec<f32>,
+    logits: Vec<f32>,
+    tmp_row: Vec<f32>,
+}
+
+impl GpuDecodeScratch {
+    fn new(full: &FullWeights) -> Self {
+        Self {
+            norm_scale: vec![0.0; full.model_dim],
+            logits: vec![0.0; full.embedding.rows()],
+            tmp_row: vec![0.0; full.model_dim],
+        }
+    }
+}
+
+fn compute_logits_cpu(
+    full: &FullWeights,
+    model: &Gemma,
+    hidden: &[f32],
+    logits_out: &mut Vec<f32>,
+) {
+    logits_out.resize(full.embedding.rows(), 0.0);
+    let mut tmp_row = vec![0.0f32; full.model_dim];
+    for row in 0..full.embedding.rows() {
+        read_row_f32(&full.embedding, row, &mut tmp_row);
+        let mut sum = 0.0f32;
+        for i in 0..full.model_dim {
+            sum += hidden[i] * tmp_row[i];
+        }
+        logits_out[row] = soft_cap(sum, model.config.final_cap);
+    }
 }
 
 impl<B: Backend> GpuModel<B> {
@@ -72,6 +112,7 @@ impl<B: Backend> GpuModel<B> {
             gating_buf: backend.alloc(2 * full.ff_hidden_dim)?,
             ff_hidden_buf: backend.alloc(full.ff_hidden_dim)?,
             linear_out_buf: backend.alloc(full.model_dim)?,
+            logits_buf: backend.alloc(full.embedding.rows()).ok(),
         };
 
         let mut layers = Vec::with_capacity(full.layers.len());
@@ -107,11 +148,20 @@ impl<B: Backend> GpuModel<B> {
             full.layers.len() - gpu_layer_count,
         );
 
+        // Upload embedding for optional GPU logits matvec.
+        let embedding_wgt = upload_mat(&backend, &full.embedding).ok();
+        let gpu_logits_enabled = std::env::var("GEMMA_GPU_CPU_LOGITS")
+            .ok()
+            .map(|v| v == "0" || v.eq_ignore_ascii_case("false"))
+            .unwrap_or(true);
+
         Ok(Self {
             backend,
             layers,
             bufs,
+            embedding_wgt,
             gpu_layer_count,
+            gpu_logits_enabled,
         })
     }
 
@@ -345,6 +395,7 @@ fn generate_gpu_tokens_with_cache<B: Backend>(
         &mut owned_cache[..]
     };
     let mut hidden = vec![0.0f32; full.model_dim];
+    let mut scratch = GpuDecodeScratch::new(full);
     let mut out_tokens = tokens.to_vec();
 
     // Prefill: process each prompt token through all layers
@@ -378,23 +429,64 @@ fn generate_gpu_tokens_with_cache<B: Backend>(
 
     // Decode: generate tokens one at a time
     for _step in 0..max_tokens {
-        // Final norm + logits (CPU)
-        let mut norm_scale = vec![0.0f32; full.model_dim];
-        read_row_f32(&full.final_norm, 0, &mut norm_scale);
-        gemma_ops::nn::rms_norm(&mut hidden, &norm_scale, 1e-6);
+        // Final norm + logits
+        read_row_f32(&full.final_norm, 0, &mut scratch.norm_scale);
+        gemma_ops::nn::rms_norm(&mut hidden, &scratch.norm_scale, 1e-6);
 
-        let mut logits = vec![0.0f32; full.embedding.rows()];
-        let mut tmp_row = vec![0.0f32; full.model_dim];
-        for row in 0..full.embedding.rows() {
-            read_row_f32(&full.embedding, row, &mut tmp_row);
-            let mut sum = 0.0f32;
-            for i in 0..full.model_dim {
-                sum += hidden[i] * tmp_row[i];
+        let next = if gpu.gpu_logits_enabled
+            && gpu.embedding_wgt.is_some()
+            && gpu.bufs.logits_buf.is_some()
+        {
+            let embed_wgt = gpu.embedding_wgt.as_ref().unwrap();
+            let logits_buf = gpu.bufs.logits_buf.as_mut().unwrap();
+            let mut download_and_sample =
+                |reason: &str, logits_buf: &mut <B as Backend>::Buf| -> i32 {
+                    if !reason.is_empty() {
+                        eprintln!("{reason}");
+                    }
+                    scratch.logits.resize(full.embedding.rows(), 0.0);
+                    if let Err(e) = gpu.backend.download_f32(
+                        logits_buf,
+                        &mut scratch.logits[..full.embedding.rows()],
+                    ) {
+                        eprintln!("GPU logits download failed, falling back to CPU logits: {e}");
+                        compute_logits_cpu(full, model, &hidden, &mut scratch.logits);
+                    }
+                    for v in &mut scratch.logits {
+                        *v = soft_cap(*v, model.config.final_cap);
+                    }
+                    sample_token(&mut scratch.logits, sampling) as i32
+                };
+            // GPU matvec for logits, then argmax on GPU backend (download just index)
+            if let Err(e) = gpu.backend.upload_f32(&hidden, &mut gpu.bufs.model_dim_buf) {
+                eprintln!("GPU logits upload failed, falling back to CPU logits: {e}");
+                compute_logits_cpu(full, model, &hidden, &mut scratch.logits);
+                sample_token(&mut scratch.logits, sampling) as i32
+            } else if let Err(e) =
+                gpu.backend
+                    .matvec(embed_wgt, &gpu.bufs.model_dim_buf, logits_buf)
+            {
+                eprintln!("GPU logits matvec failed, falling back to CPU logits: {e}");
+                compute_logits_cpu(full, model, &hidden, &mut scratch.logits);
+                sample_token(&mut scratch.logits, sampling) as i32
+            } else if let Err(e) = gpu.backend.synchronize() {
+                eprintln!("GPU sync after logits failed, falling back to CPU logits: {e}");
+                compute_logits_cpu(full, model, &hidden, &mut scratch.logits);
+                sample_token(&mut scratch.logits, sampling) as i32
+            } else {
+                // argmax is invariant under monotonic soft_cap(), so we can keep logits on device.
+                match gpu.backend.argmax_with_scratch(logits_buf, None) {
+                    Ok(idx) => idx as i32,
+                    Err(e) => download_and_sample(
+                        &format!("device argmax failed, falling back to host sample: {e}"),
+                        logits_buf,
+                    ),
+                }
             }
-            logits[row] = soft_cap(sum, model.config.final_cap);
-        }
-
-        let next = sample_token(&mut logits, sampling) as i32;
+        } else {
+            compute_logits_cpu(full, model, &hidden, &mut scratch.logits);
+            sample_token(&mut scratch.logits, sampling) as i32
+        };
         let next_id = next as usize;
         out_tokens.push(next);
         if let Some(cb) = on_token.as_mut() {

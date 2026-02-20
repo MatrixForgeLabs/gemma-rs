@@ -49,6 +49,22 @@ struct GenerationOptions {
     sampling: SamplingOptions,
 }
 
+struct DecodeScratch {
+    norm_scale: Vec<f32>,
+    logits: Vec<f32>,
+    tmp_row: Vec<f32>,
+}
+
+impl DecodeScratch {
+    fn new(full: &FullWeights) -> Self {
+        Self {
+            norm_scale: vec![0.0; full.model_dim],
+            logits: vec![0.0; full.embedding.rows()],
+            tmp_row: vec![0.0; full.model_dim],
+        }
+    }
+}
+
 pub(crate) struct SamplingState {
     opts: SamplingOptions,
     rng: Rng64,
@@ -444,6 +460,7 @@ impl Gemma {
         }
     }
 
+    #[allow(dead_code)]
     fn wrap_and_tokenize(&self, prompt: &str, pos: usize) -> Vec<i32> {
         self.wrap_tokens(self.tokenizer.encode(prompt), pos)
     }
@@ -620,6 +637,7 @@ fn load_full_weights(store: &ModelStore, config: &ModelConfig) -> Option<FullWei
     })
 }
 
+#[allow(dead_code)]
 fn generate_minimal(
     model: &Gemma,
     weights: &MinimalWeights,
@@ -684,6 +702,7 @@ fn generate_minimal_tokens(
     out_tokens
 }
 
+#[allow(dead_code)]
 fn generate_full(
     model: &Gemma,
     full: &FullWeights,
@@ -731,6 +750,7 @@ fn generate_full_tokens_with_cache(
     };
 
     let mut hidden = vec![0.0f32; full.model_dim];
+    let mut scratch = DecodeScratch::new(full);
     let mut out_tokens = prompt_tokens.to_vec();
 
     let debug_layer_stats = std::env::var("GEMMA_DEBUG_LAYER_STATS")
@@ -763,6 +783,7 @@ fn generate_full_tokens_with_cache(
             debug_topk,
             debug_layer_stats,
             start_pos,
+            &mut scratch,
         );
         let Some(next) = next else {
             break;
@@ -840,27 +861,27 @@ fn decode_full_next_token(
     debug_topk: usize,
     debug_layer_stats: bool,
     start_pos: usize,
+    scratch: &mut DecodeScratch,
 ) -> Option<i32> {
-    let mut norm_scale = vec![0.0f32; full.model_dim];
-    read_row_f32(&full.final_norm, 0, &mut norm_scale);
-    gemma_ops::nn::rms_norm(hidden, &norm_scale, 1e-6);
+    read_row_f32(&full.final_norm, 0, &mut scratch.norm_scale);
+    gemma_ops::nn::rms_norm(hidden, &scratch.norm_scale, 1e-6);
 
-    let mut logits = vec![0.0f32; full.embedding.rows()];
-    let mut tmp_row = vec![0.0f32; full.model_dim];
+    scratch.logits.resize(full.embedding.rows(), 0.0);
+    scratch.tmp_row.resize(full.model_dim, 0.0);
     for row in 0..full.embedding.rows() {
-        read_row_f32(&full.embedding, row, &mut tmp_row);
+        read_row_f32(&full.embedding, row, &mut scratch.tmp_row);
         let mut sum = 0.0f32;
         for i in 0..full.model_dim {
-            sum += hidden[i] * tmp_row[i];
+            sum += hidden[i] * scratch.tmp_row[i];
         }
-        logits[row] = soft_cap(sum, model.config.final_cap);
+        scratch.logits[row] = soft_cap(sum, model.config.final_cap);
     }
 
     if debug_topk > 0 && step == 0 {
-        debug_print_topk_logits(model, &logits, debug_topk);
+        debug_print_topk_logits(model, &scratch.logits, debug_topk);
     }
 
-    let next = sample_token(&mut logits, sampling) as i32;
+    let next = sample_token(&mut scratch.logits, sampling) as i32;
     let next_id = next as usize;
     if next_id >= full.embedding.rows() {
         return Some(next);
@@ -1203,6 +1224,274 @@ pub(crate) fn soft_cap(x: f32, cap: f32) -> f32 {
         cap * (x / cap).tanh()
     } else {
         x
+    }
+}
+
+#[cfg(test)]
+mod cache_state_tests {
+    use super::*;
+    use gemma_util::basics::Extents2D;
+
+    fn dummy_mat(name: &str) -> MatPtr {
+        MatPtr::new(name, Type::F32, Extents2D::new(0, 0))
+    }
+
+    fn dummy_layer() -> LayerWeights {
+        LayerWeights {
+            qkv_ein: dummy_mat("qkv"),
+            qkv_owner: MatOwner::new(),
+            att_ein: dummy_mat("att"),
+            att_owner: MatOwner::new(),
+            gating_ein: dummy_mat("gating"),
+            gating_owner: MatOwner::new(),
+            linear_w: dummy_mat("linear"),
+            linear_owner: MatOwner::new(),
+            pre_att_ns: dummy_mat("pre_att_ns"),
+            pre_att_owner: MatOwner::new(),
+            pre_ff_ns: dummy_mat("pre_ff_ns"),
+            pre_ff_owner: MatOwner::new(),
+            post_att_ns: dummy_mat("post_att_ns"),
+            post_att_owner: MatOwner::new(),
+            post_ff_ns: dummy_mat("post_ff_ns"),
+            post_ff_owner: MatOwner::new(),
+            key_norm_scale: None,
+            query_norm_scale: None,
+        }
+    }
+
+    fn dummy_full(layer_count: usize, max_seq_len: usize) -> FullWeights {
+        let layers = (0..layer_count).map(|_| dummy_layer()).collect();
+        FullWeights {
+            embedding: dummy_mat("embed"),
+            _embedding_owner: MatOwner::new(),
+            final_norm: dummy_mat("final_norm"),
+            _final_norm_owner: MatOwner::new(),
+            layers,
+            model_dim: 1,
+            heads: 1,
+            kv_heads: 1,
+            qkv_dim: 1,
+            ff_hidden_dim: 1,
+            max_seq_len,
+            attention_window_sizes: vec![max_seq_len; layer_count],
+            att_cap: 0.0,
+            query_scale: QueryScaleType::SqrtKeySize,
+            layer_configs: (0..layer_count)
+                .map(|idx| crate::configs::LayerConfig {
+                    layer_idx: idx,
+                    attention_type: crate::configs::LayerAttentionType::Gemma,
+                    post_norm: crate::configs::PostNormType::None,
+                    use_qk_norm: false,
+                    ff_biases: false,
+                    model_dim: 1,
+                    ff_hidden_dim: 1,
+                    heads: 1,
+                    kv_heads: 1,
+                    qkv_dim: 2,
+                    optimized_gating: true,
+                    activation: crate::configs::ActivationType::Gelu,
+                    post_qk: crate::configs::PostQKType::Rope,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn cache_state_allocates_per_layer() {
+        let full = dummy_full(3, 8);
+        let state = CacheState::new(&full);
+        assert_eq!(state.cache.len(), 3);
+        for kv in state.cache.iter() {
+            assert_eq!(kv.seq_len(), 8);
+        }
+        assert_eq!(state.pos, 0);
+    }
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+    use gemma_util::basics::Extents2D;
+    use kitoken::{
+        Configuration, Fallback, Kitoken, Metadata, Model, SpecialToken, SpecialTokenKind,
+        SpecialVocab, Token, Vocab,
+    };
+
+    fn owned_mat(name: &str, rows: usize, cols: usize, fill: f32) -> (MatPtr, Vec<f32>) {
+        let mut mat = MatPtr::new(name, Type::F32, Extents2D::new(rows, cols));
+        let mut buf = vec![fill; rows * cols];
+        mat.set_ptr(buf.as_mut_ptr() as *mut u8, cols);
+        (mat, buf)
+    }
+
+    fn make_full_for_test() -> (FullWeights, Vec<Vec<f32>>) {
+        let mut bufs: Vec<Vec<f32>> = Vec::new();
+        let (embedding, b0) = owned_mat("embed", 4, 1, 0.0);
+        bufs.push(b0);
+        let (final_norm, b1) = owned_mat("final_norm", 1, 1, 1.0);
+        bufs.push(b1);
+
+        let (qkv_ein, b2) = owned_mat("qkv", 6, 1, 0.0);
+        let (att_ein, b3) = owned_mat("att", 1, 2, 0.0);
+        let (gating_ein, b4) = owned_mat("gating", 2, 1, 0.0);
+        let (linear_w, b5) = owned_mat("linear", 1, 1, 0.0);
+        let (pre_att_ns, b6) = owned_mat("pre_att_ns", 1, 1, 1.0);
+        let (pre_ff_ns, b7) = owned_mat("pre_ff_ns", 1, 1, 1.0);
+        let (post_att_ns, b8) = owned_mat("post_att_ns", 1, 1, 1.0);
+        let (post_ff_ns, b9) = owned_mat("post_ff_ns", 1, 1, 1.0);
+        bufs.extend([b2, b3, b4, b5, b6, b7, b8, b9]);
+
+        let layer = LayerWeights {
+            qkv_ein,
+            qkv_owner: MatOwner::new(),
+            att_ein,
+            att_owner: MatOwner::new(),
+            gating_ein,
+            gating_owner: MatOwner::new(),
+            linear_w,
+            linear_owner: MatOwner::new(),
+            pre_att_ns,
+            pre_att_owner: MatOwner::new(),
+            pre_ff_ns,
+            pre_ff_owner: MatOwner::new(),
+            post_att_ns,
+            post_att_owner: MatOwner::new(),
+            post_ff_ns,
+            post_ff_owner: MatOwner::new(),
+            key_norm_scale: None,
+            query_norm_scale: None,
+        };
+
+        let full = FullWeights {
+            embedding,
+            _embedding_owner: MatOwner::new(),
+            final_norm,
+            _final_norm_owner: MatOwner::new(),
+            layers: vec![layer],
+            model_dim: 1,
+            heads: 1,
+            kv_heads: 1,
+            qkv_dim: 2,
+            ff_hidden_dim: 1,
+            max_seq_len: 8,
+            attention_window_sizes: vec![8],
+            att_cap: 0.0,
+            query_scale: QueryScaleType::SqrtKeySize,
+            layer_configs: vec![crate::configs::LayerConfig {
+                layer_idx: 0,
+                attention_type: crate::configs::LayerAttentionType::Gemma,
+                post_norm: crate::configs::PostNormType::None,
+                use_qk_norm: false,
+                ff_biases: false,
+                model_dim: 1,
+                ff_hidden_dim: 1,
+                heads: 1,
+                kv_heads: 1,
+                qkv_dim: 1,
+                optimized_gating: true,
+                activation: crate::configs::ActivationType::Gelu,
+                post_qk: crate::configs::PostQKType::HalfRope,
+            }],
+        };
+
+        (full, bufs)
+    }
+
+    fn mock_tokenizer() -> Tokenizer {
+        let vocab: Vocab = vec![
+            Token {
+                id: 0,
+                bytes: b"a".to_vec(),
+            },
+            Token {
+                id: 1,
+                bytes: b"b".to_vec(),
+            },
+        ];
+        let specials: SpecialVocab = vec![
+            SpecialToken {
+                id: 2,
+                bytes: b"<s>".to_vec(),
+                kind: SpecialTokenKind::Control,
+                ident: None,
+                score: 0.0,
+                extract: false,
+            },
+            SpecialToken {
+                id: 3,
+                bytes: b"</s>".to_vec(),
+                kind: SpecialTokenKind::Control,
+                ident: None,
+                score: 0.0,
+                extract: false,
+            },
+        ];
+        let config = Configuration {
+            fallback: vec![Fallback::Unknown],
+            normalization: Vec::new(),
+            split: Vec::new(),
+            processing: Vec::new(),
+            decoding: Vec::new(),
+            templates: Vec::new(),
+        };
+        let meta = Metadata::default();
+        let model = Model::WordPiece {
+            vocab,
+            max_word_chars: 16,
+        };
+        let kt = Kitoken::new(model, specials, config, meta).expect("mock kitoken");
+        Tokenizer::from_kitoken(kt)
+    }
+
+    #[test]
+    fn streaming_callback_receives_token() {
+        let tokenizer = mock_tokenizer();
+        let (full, _bufs) = make_full_for_test();
+        let mut config = ModelConfig::new(1);
+        config.model_dim = 1;
+        config.vocab_size = 4;
+        config.max_seq_len = 8;
+        config.eos_id = 3;
+        config.secondary_eos_id = 3;
+        config.att_cap = 0.0;
+        config.final_cap = 0.0;
+        config.query_scale = QueryScaleType::SqrtKeySize;
+        config.attention_window_sizes = vec![8];
+        config.layers = full.layer_configs.clone();
+
+        let model = Gemma {
+            config,
+            tokenizer,
+            weights: None,
+            full: Some(full),
+        };
+        let mut state = model.init_cache_state().unwrap();
+
+        // BOS (2) + token "a" (0)
+        let chunk_tokens = vec![2, 0];
+        let mut seen: Vec<i32> = Vec::new();
+        let mut cb = |tok: i32| seen.push(tok);
+        let mut cb_ref: &mut dyn FnMut(i32) = &mut cb;
+        let _ = generate_full_tokens_with_cache(
+            &model,
+            model.full.as_ref().unwrap(),
+            &chunk_tokens,
+            1,
+            GenerationOptions {
+                prefix_end: None,
+                sampling: SamplingOptions {
+                    temperature: 1.0,
+                    top_k: 1,
+                    top_p: 1.0,
+                    seed: Some(123),
+                },
+            },
+            &mut SamplingState::new(SamplingOptions::default()),
+            state.pos,
+            Some(&mut state.cache),
+            Some(&mut cb_ref),
+        );
+        assert!(!seen.is_empty());
     }
 }
 

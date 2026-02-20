@@ -289,6 +289,18 @@ impl Backend for CpuBackend {
         Ok(())
     }
 
+    fn argmax(&self, buf: &Self::Buf) -> Result<usize> {
+        let mut best = 0usize;
+        let mut best_val = f32::NEG_INFINITY;
+        for (i, &v) in buf.data.iter().enumerate() {
+            if v > best_val {
+                best_val = v;
+                best = i;
+            }
+        }
+        Ok(best)
+    }
+
     fn supports_op(&self, _op: OpKind) -> bool {
         true
     }

@@ -8,3 +8,7 @@ license = "Apache-2.0"
 half = { workspace = true }
 gemma-compression = { path = "../gemma-compression" }
 rayon = { workspace = true }
+matrixmultiply = { version = "0.3", optional = true }
+
+[features]
+blas = ["matrixmultiply"]

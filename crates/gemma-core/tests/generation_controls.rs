@@ -13,6 +13,7 @@ fn default_sbs_path() -> PathBuf {
 }
 
 #[test]
+#[ignore = "Requires local Gemma SBS weights; long-running"]
 fn max_tokens_caps_output_growth() {
     let sbs_path = default_sbs_path();
     if !sbs_path.exists() {
@@ -35,6 +36,7 @@ fn max_tokens_caps_output_growth() {
 }
 
 #[test]
+#[ignore = "Requires local Gemma SBS weights; long-running"]
 fn eos_id_can_stop_generation_early() {
     let sbs_path = default_sbs_path();
     if !sbs_path.exists() {
@@ -61,6 +63,7 @@ fn eos_id_can_stop_generation_early() {
 }
 
 #[test]
+#[ignore = "Requires local Gemma SBS weights; long-running"]
 fn prefix_end_none_matches_default_generate() {
     let sbs_path = default_sbs_path();
     if !sbs_path.exists() {
@@ -78,6 +81,7 @@ fn prefix_end_none_matches_default_generate() {
 }
 
 #[test]
+#[ignore = "Requires local Gemma SBS weights; long-running"]
 fn prefix_end_option_generates_without_overgrowth() {
     let sbs_path = default_sbs_path();
     if !sbs_path.exists() {
@@ -97,6 +101,7 @@ fn prefix_end_option_generates_without_overgrowth() {
 }
 
 #[test]
+#[ignore = "Requires local Gemma SBS weights; long-running"]
 fn sampling_seed_is_repeatable() {
     let sbs_path = default_sbs_path();
     if !sbs_path.exists() {
@@ -120,6 +125,7 @@ fn sampling_seed_is_repeatable() {
 }
 
 #[test]
+#[ignore = "Requires local Gemma SBS weights; long-running"]
 fn prefix_end_zero_matches_default_generate() {
     let sbs_path = default_sbs_path();
     if !sbs_path.exists() {
@@ -137,6 +143,7 @@ fn prefix_end_zero_matches_default_generate() {
 }
 
 #[test]
+#[ignore = "Requires local Gemma SBS weights; long-running"]
 fn very_large_prefix_end_is_clamped_and_matches_default() {
     let sbs_path = default_sbs_path();
     if !sbs_path.exists() {

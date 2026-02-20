@@ -185,6 +185,17 @@ pub trait Backend: Send + Sync + Sized {
     /// No-op for synchronous backends (CPU).
     fn synchronize(&self) -> Result<()>;
 
+    /// Argmax over a buffer, returning the index of the maximum element.
+    ///
+    /// Used by GPU-side sampling to avoid downloading full logits.
+    fn argmax(&self, buf: &Self::Buf) -> Result<usize>;
+
+    /// Optional argmax that writes intermediate maxima to a provided scratch buffer.
+    /// Implementations may ignore the scratch buffer and fall back to `argmax`.
+    fn argmax_with_scratch(&self, buf: &Self::Buf, _scratch: Option<&mut Self::Buf>) -> Result<usize> {
+        self.argmax(buf)
+    }
+
     /// Query whether this backend supports a given operation kind.
     ///
     /// Used by the execution planner to decide whether to fall back to CPU

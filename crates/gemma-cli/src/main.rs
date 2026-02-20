@@ -3,6 +3,10 @@ use gemma_core::gemma::{Gemma, SamplingOptions};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_usage();
+        return;
+    }
     let mut prompt = "hello".to_string();
     let mut weights = "weights.sbs".to_string();
     let mut max_tokens = 16usize;
@@ -18,6 +22,9 @@ fn main() {
     let mut chat = false;
     let mut stream = false;
     let mut bench = false;
+    let mut bench_iters: usize = 3;
+    let mut bench_warmup: usize = 1;
+    let mut bench_json: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -97,6 +104,24 @@ fn main() {
             "--bench" => {
                 bench = true;
             }
+            "--bench-iters" => {
+                i += 1;
+                if i < args.len() {
+                    bench_iters = args[i].parse().unwrap_or(bench_iters);
+                }
+            }
+            "--bench-warmup" => {
+                i += 1;
+                if i < args.len() {
+                    bench_warmup = args[i].parse().unwrap_or(bench_warmup);
+                }
+            }
+            "--bench-json" => {
+                i += 1;
+                if i < args.len() {
+                    bench_json = Some(args[i].clone());
+                }
+            }
             _ => {}
         }
         i += 1;
@@ -172,11 +197,36 @@ fn main() {
 
     if bench {
         match device.as_str() {
-            "cpu" => run_bench_cpu(&model, &prompt, max_tokens, sampling),
+            "cpu" => run_bench_cpu(
+                &model,
+                &prompt,
+                max_tokens,
+                sampling,
+                bench_warmup,
+                bench_iters,
+                bench_json.as_deref(),
+            ),
             #[cfg(feature = "cuda")]
             d if d == "cuda" || d.starts_with("cuda:") => {
-                run_bench_cpu(&model, &prompt, max_tokens, sampling);
-                run_bench_cuda(&model, &prompt, max_tokens, sampling, d);
+                run_bench_cpu(
+                    &model,
+                    &prompt,
+                    max_tokens,
+                    sampling,
+                    bench_warmup,
+                    bench_iters,
+                    bench_json.as_deref(),
+                );
+                run_bench_cuda(
+                    &model,
+                    &prompt,
+                    max_tokens,
+                    sampling,
+                    d,
+                    bench_warmup,
+                    bench_iters,
+                    bench_json.as_deref(),
+                );
             }
             #[cfg(not(feature = "cuda"))]
             d if d == "cuda" || d.starts_with("cuda:") => {
@@ -230,6 +280,32 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn print_usage() {
+    println!(
+        "\
+gemma-cli usage:
+  --weights <path>      Path to weights.sbs
+  --prompt <text>       Single-shot prompt (default: \"hello\")
+  --max-tokens <n>      Max tokens to generate (default 16)
+  --temperature <f>     Sampling temperature (default 1.0)
+  --top-k <n>           Top-K sampling (default 1)
+  --top-p <f>           Top-P sampling (default 1.0)
+  --seed <u64>          RNG seed
+  --encode <text>       Encode text to token IDs
+  --decode \"1 2 3\"     Decode token IDs to text
+  --print-backend       Print weights availability (full/minimal)
+  --print-config        Print model config summary
+  --device <cpu|cuda[:i]>  Select backend (default cpu)
+  --chat                Interactive chat loop
+  --stream              Stream tokens during chat
+  --bench               Run quick tok/s benchmark (CPU and CUDA if selected)
+  --bench-iters <n>     Measured iterations for bench (default 3)
+  --bench-warmup <n>    Warmup iterations (default 1)
+  --bench-json <path>   Write bench results as JSON
+"
+    );
 }
 
 // ── Chat helpers ────────────────────────────────────────────────────────
@@ -511,17 +587,66 @@ fn run_cuda(
     println!("{}", out);
 }
 
-fn run_bench_cpu(model: &Gemma, prompt: &str, max_tokens: usize, sampling: SamplingOptions) {
+fn bench_series(mut run: impl FnMut() -> usize, warmup: usize, iters: usize) -> Vec<f64> {
     use std::time::Instant;
-    let start = Instant::now();
-    let out = model.generate_with_sampling(prompt, max_tokens, sampling);
-    let elapsed = start.elapsed().as_secs_f64();
-    let tokens = model.tokenizer.encode(&out).len().max(1);
-    let tok_s = tokens as f64 / elapsed.max(1e-9);
-    eprintln!(
-        "CPU bench: {:.2} tok/s ({} tokens in {:.3}s)",
-        tok_s, tokens, elapsed
+    for _ in 0..warmup {
+        let _ = run();
+    }
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let start = Instant::now();
+        let tokens = run();
+        let elapsed = start.elapsed().as_secs_f64();
+        samples.push(tokens as f64 / elapsed.max(1e-9));
+    }
+    samples
+}
+
+fn summarize(samples: &[f64]) -> (f64, f64, f64) {
+    let mut v = samples.to_vec();
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = v[v.len() / 2];
+    let p90_idx = ((v.len() as f64 * 0.9).floor() as usize).min(v.len() - 1);
+    let p90 = v[p90_idx];
+    let mean = v.iter().copied().sum::<f64>() / v.len() as f64;
+    (mean, median, p90)
+}
+
+fn run_bench_cpu(
+    model: &Gemma,
+    prompt: &str,
+    max_tokens: usize,
+    sampling: SamplingOptions,
+    warmup: usize,
+    iters: usize,
+    json_out: Option<&str>,
+) {
+    eprintln!("CPU bench: device=CPU");
+    let tokenizer = &model.tokenizer;
+    let samples = bench_series(
+        || {
+            let out = model.generate_with_sampling(prompt, max_tokens, sampling);
+            tokenizer.encode(&out).len().max(1)
+        },
+        warmup,
+        iters,
     );
+    let (mean, med, p90) = summarize(&samples);
+    eprintln!(
+        "CPU bench: mean {:.2} tok/s, p50 {:.2}, p90 {:.2} (iters={}, warmup={})",
+        mean, med, p90, iters, warmup
+    );
+    if let Some(path) = json_out {
+        let payload = serde_json::json!({
+            "device": "cpu",
+            "mean_tok_s": mean,
+            "p50_tok_s": med,
+            "p90_tok_s": p90,
+            "iters": iters,
+            "warmup": warmup,
+        });
+        std::fs::write(path, payload.to_string()).ok();
+    }
 }
 
 #[cfg(feature = "cuda")]
@@ -531,10 +656,12 @@ fn run_bench_cuda(
     max_tokens: usize,
     sampling: SamplingOptions,
     device_str: &str,
+    warmup: usize,
+    iters: usize,
+    json_out: Option<&str>,
 ) {
     use gemma_gpu::backend::Backend;
     use gemma_gpu::cuda::CudaBackend;
-    use std::time::Instant;
 
     let ordinal = if device_str.starts_with("cuda:") {
         device_str[5..].parse::<usize>().unwrap_or(0)
@@ -549,6 +676,15 @@ fn run_bench_cuda(
             return;
         }
     };
+    let caps = backend.caps().clone();
+    eprintln!(
+        "CUDA bench: device={} compute {}.{} free={}MB total={}MB",
+        caps.name,
+        caps.compute_major,
+        caps.compute_minor,
+        caps.free_memory / (1024 * 1024),
+        caps.total_memory / (1024 * 1024)
+    );
     let mut gpu = match model.create_gpu_model(backend) {
         Some(Ok(g)) => g,
         Some(Err(e)) => {
@@ -561,13 +697,34 @@ fn run_bench_cuda(
         }
     };
 
-    let start = Instant::now();
-    let out = model.generate_with_gpu(&mut gpu, prompt, max_tokens, sampling);
-    let elapsed = start.elapsed().as_secs_f64();
-    let tokens = model.tokenizer.encode(&out).len().max(1);
-    let tok_s = tokens as f64 / elapsed.max(1e-9);
-    eprintln!(
-        "CUDA bench: {:.2} tok/s ({} tokens in {:.3}s)",
-        tok_s, tokens, elapsed
+    let tokenizer = &model.tokenizer;
+    let samples = bench_series(
+        || {
+            let out = model.generate_with_gpu(&mut gpu, prompt, max_tokens, sampling);
+            tokenizer.encode(&out).len().max(1)
+        },
+        warmup,
+        iters,
     );
+    let (mean, med, p90) = summarize(&samples);
+    eprintln!(
+        "CUDA bench: mean {:.2} tok/s, p50 {:.2}, p90 {:.2} (iters={}, warmup={})",
+        mean, med, p90, iters, warmup
+    );
+    if let Some(path) = json_out {
+        let payload = serde_json::json!({
+            "device": "cuda",
+            "name": caps.name,
+            "compute_major": caps.compute_major,
+            "compute_minor": caps.compute_minor,
+            "free_mb": caps.free_memory / (1024 * 1024),
+            "total_mb": caps.total_memory / (1024 * 1024),
+            "mean_tok_s": mean,
+            "p50_tok_s": med,
+            "p90_tok_s": p90,
+            "iters": iters,
+            "warmup": warmup,
+        });
+        std::fs::write(path, payload.to_string()).ok();
+    }
 }
