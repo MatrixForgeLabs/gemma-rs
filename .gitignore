@@ -3,6 +3,11 @@
 # Model weights & archives
 *.sbs
 *.tar.gz
+*.gguf
+
+# Credentials
+.env
+kaggle.json
 
 # Claude Code temp files
 .claude/
