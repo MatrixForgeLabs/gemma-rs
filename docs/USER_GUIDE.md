@@ -54,6 +54,8 @@ Binary: `cargo run -p gemma-fetch -- <options>`
   # Preferred: API token from Kaggle account page
   echo "KAGGLE_API_TOKEN=your_token_string" > .env   # or export in your shell
   cargo run -p gemma-fetch -- --kaggle google/gemma-3/gguf/gemma-3-1b-it-qat-q4_0 --out models/
+  # If a specific version is needed, append /<version> or pass --version:
+  cargo run -p gemma-fetch -- --kaggle google/gemma-3/gguf/gemma-3-12b-it-qat-q4_0/3 --out models/
   ```
   Use `--version N` to pin a specific version. Legacy creds (`KAGGLE_USERNAME`/`KAGGLE_KEY` or `~/.kaggle/kaggle.json`) still work for compatibility.
 

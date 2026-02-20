@@ -44,21 +44,32 @@ pub struct KaggleHandle {
     pub model: String,
     pub framework: String,
     pub variation: String,
+    pub version: Option<u32>,
 }
 
 impl KaggleHandle {
     pub fn parse(spec: &str) -> Result<Self> {
         let parts: Vec<_> = spec.split('/').collect();
-        if parts.len() != 4 {
+        if !(4..=5).contains(&parts.len()) {
             return Err(FetchError::Parse(
-                "expected owner/model/framework/variation".into(),
+                "expected owner/model/framework/variation[/version]".into(),
             ));
         }
+        let version = if parts.len() == 5 {
+            Some(
+                parts[4]
+                    .parse::<u32>()
+                    .map_err(|_| FetchError::Parse("version must be an integer".into()))?,
+            )
+        } else {
+            None
+        };
         Ok(Self {
             owner: parts[0].to_string(),
             model: parts[1].to_string(),
             framework: parts[2].to_string(),
             variation: parts[3].to_string(),
+            version,
         })
     }
 
@@ -180,10 +191,11 @@ pub fn search_models(query: &str, page_size: usize) -> Result<Vec<KaggleModel>> 
 /// Download the latest (or a specific) model version to dest_dir.
 pub fn download_model(
     handle: &KaggleHandle,
-    version: Option<u32>,
+    version_override: Option<u32>,
     dest_dir: &Path,
 ) -> Result<PathBuf> {
     let auth = load_auth()?;
+    let version = version_override.or(handle.version);
     let base = if let Some(v) = version {
         format!(
             "{KAGGLE_API}/models/{}/{}/{}/{}/versions/{}/download",
