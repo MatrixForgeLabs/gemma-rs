@@ -6,9 +6,8 @@ license.workspace = true
 
 [dependencies]
 gemma-compression = { path = "../gemma-compression" }
-gemma-ops = { path = "../gemma-ops" }
+inference-gpu = { path = "../../../inference-gpu" }
 half.workspace = true
-thiserror.workspace = true
 
 [dependencies.cudarc]
 version = "0.19"
@@ -17,7 +16,8 @@ features = ["std", "cublas", "nvrtc", "driver", "cuda-12090"]
 
 [features]
 default = []
-cuda = ["dep:cudarc"]
+cuda = ["dep:cudarc", "inference-gpu/cuda"]
 
 [dev-dependencies]
 gemma-compression = { path = "../gemma-compression" }
+gemma-ops = { path = "../gemma-ops" }

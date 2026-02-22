@@ -1,10 +1,21 @@
 //! GPU backend abstraction for gemma-rs inference.
 //!
-//! Provides a `Backend` trait that abstracts over compute devices (CPU, CUDA, etc.)
-//! with associated buffer types for type-safe device memory management.
+//! This crate is a thin wrapper around `inference-gpu`, adding Gemma-specific
+//! helpers for weight decompression (SFP, NUQ, I8) and type conversion.
+//!
+//! All core backend types, traits, and implementations are re-exported from
+//! `inference-gpu` so that consumers can continue using `gemma_gpu::backend::*`
+//! and `gemma_gpu::cuda::*` paths.
 
-pub mod backend;
-pub mod cpu;
+/// Re-exported backend trait, types, and error definitions.
+pub use inference_gpu::backend;
 
+/// Re-exported CPU backend implementation.
+pub use inference_gpu::cpu;
+
+/// Re-exported CUDA backend implementation.
 #[cfg(feature = "cuda")]
-pub mod cuda;
+pub use inference_gpu::cuda;
+
+/// Gemma-specific helpers for weight format conversion and upload.
+pub mod gemma;

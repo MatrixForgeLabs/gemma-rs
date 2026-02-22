@@ -12,6 +12,7 @@
 //! message reports how many layers are GPU-resident.
 
 use gemma_gpu::backend::{Backend, Result as GpuResult};
+use gemma_gpu::gemma::upload_gemma_weight;
 
 use crate::attention::{build_attention_plan, kv_head_for_query_head};
 use crate::configs::{PostNormType, QueryScaleType};
@@ -207,7 +208,7 @@ fn upload_layer_weights<B: Backend>(
 fn upload_mat<B: Backend>(backend: &B, mat: &gemma_util::mat::MatPtr) -> GpuResult<B::Wgt> {
     let bytes = mat.packed_bytes();
     let packed = unsafe { std::slice::from_raw_parts(mat.row_bytes(0), bytes) };
-    backend.upload_weight(packed, mat.ty(), mat.rows(), mat.cols())
+    upload_gemma_weight(backend, packed, mat.ty(), mat.rows(), mat.cols())
 }
 
 // ── Generation ──────────────────────────────────────────────────────────

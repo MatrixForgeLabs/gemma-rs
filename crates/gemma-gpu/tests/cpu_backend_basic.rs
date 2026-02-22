@@ -1,8 +1,10 @@
-//! Tests that CpuBackend produces results identical to direct gemma-ops calls.
+//! Tests that the CPU backend (via inference-gpu) produces correct results,
+//! including Gemma-specific weight upload through the helper function.
 
 use gemma_compression::types::Type;
-use gemma_gpu::backend::Backend;
+use gemma_gpu::backend::{Backend, OpKind};
 use gemma_gpu::cpu::CpuBackend;
+use gemma_gpu::gemma::upload_gemma_weight;
 
 fn approx_eq(a: &[f32], b: &[f32], tol: f32) {
     assert_eq!(
@@ -17,10 +19,7 @@ fn approx_eq(a: &[f32], b: &[f32], tol: f32) {
         assert!(
             diff <= tol,
             "mismatch at index {}: {} vs {} (diff={})",
-            i,
-            x,
-            y,
-            diff
+            i, x, y, diff
         );
     }
 }
@@ -43,17 +42,10 @@ fn matvec_f32() {
 
     let rows = 4;
     let cols = 3;
-    // Row-major weight matrix:
-    // [[1, 2, 3],
-    //  [4, 5, 6],
-    //  [7, 8, 9],
-    //  [10,11,12]]
     let weight_f32: Vec<f32> = (1..=12).map(|x| x as f32).collect();
     let weight_bytes: Vec<u8> = weight_f32.iter().flat_map(|f| f.to_ne_bytes()).collect();
 
-    let wgt = backend
-        .upload_weight(&weight_bytes, Type::F32, rows, cols)
-        .unwrap();
+    let wgt = upload_gemma_weight(&backend, &weight_bytes, Type::F32, rows, cols).unwrap();
 
     let x_data = vec![1.0, 0.5, -1.0];
     let mut x = backend.alloc(cols).unwrap();
@@ -77,14 +69,11 @@ fn matvec_sfp() {
 
     let rows = 4;
     let cols = 8;
-    // Create known f32 values within SFP range (-1.875..=1.875), encode to SFP
     let weight_f32: Vec<f32> = (0..rows * cols).map(|i| (i as f32 * 0.1) - 1.5).collect();
     let mut sfp_packed = vec![0u8; rows * cols];
     gemma_compression::sfp::encode_f32(&weight_f32, &mut sfp_packed);
 
-    let wgt = backend
-        .upload_weight(&sfp_packed, Type::SFP, rows, cols)
-        .unwrap();
+    let wgt = upload_gemma_weight(&backend, &sfp_packed, Type::SFP, rows, cols).unwrap();
 
     let x_data: Vec<f32> = (0..cols).map(|i| i as f32 * 0.5).collect();
     let mut x = backend.alloc(cols).unwrap();
@@ -114,9 +103,7 @@ fn matvec_bf16() {
         .collect();
     let weight_bytes: Vec<u8> = weight_bf16.iter().flat_map(|b| b.to_ne_bytes()).collect();
 
-    let wgt = backend
-        .upload_weight(&weight_bytes, Type::BF16, rows, cols)
-        .unwrap();
+    let wgt = upload_gemma_weight(&backend, &weight_bytes, Type::BF16, rows, cols).unwrap();
 
     let x_data: Vec<f32> = (0..cols).map(|i| i as f32 * 0.5).collect();
     let mut x = backend.alloc(cols).unwrap();
@@ -141,12 +128,12 @@ fn rms_norm_matches() {
     let scale_data = vec![0.5, 0.5, 0.5, 0.5];
     let eps = 1e-6;
 
-    // Backend path
     let mut buf = backend.alloc(4).unwrap();
     backend.upload_f32(&data, &mut buf).unwrap();
     let mut scale_buf = backend.alloc(4).unwrap();
     backend.upload_f32(&scale_data, &mut scale_buf).unwrap();
-    backend.rms_norm(&mut buf, &scale_buf, eps).unwrap();
+    // Gemma uses (1 + scale) convention
+    backend.rms_norm(&mut buf, &scale_buf, eps, true).unwrap();
 
     let mut result = vec![0.0f32; 4];
     backend.download_f32(&buf, &mut result).unwrap();
@@ -220,7 +207,6 @@ fn gelu_gate_matches() {
     let backend = CpuBackend::new();
 
     let hidden_dim = 4;
-    // gate = first 4, up = last 4
     let src_data = vec![0.5, -0.3, 1.0, -1.0, 2.0, 3.0, 0.5, -0.5];
 
     let mut src = backend.alloc(8).unwrap();
@@ -231,7 +217,6 @@ fn gelu_gate_matches() {
     let mut result = vec![0.0f32; hidden_dim];
     backend.download_f32(&dst, &mut result).unwrap();
 
-    // Reference: manual computation matching gemma-core's gelu
     fn gelu(x: f32) -> f32 {
         0.5 * x * (1.0 + (0.7978845608 * (x + 0.044715 * x * x * x)).tanh())
     }
@@ -281,7 +266,6 @@ fn scale_inplace_works() {
 
 #[test]
 fn supports_all_ops() {
-    use gemma_gpu::backend::OpKind;
     let backend = CpuBackend::new();
     let ops = [
         OpKind::Matvec,
@@ -291,6 +275,7 @@ fn supports_all_ops() {
         OpKind::Rope,
         OpKind::Dot,
         OpKind::GeluGate,
+        OpKind::SiluGate,
         OpKind::AddInplace,
         OpKind::ScaleInplace,
         OpKind::FlashAttention,

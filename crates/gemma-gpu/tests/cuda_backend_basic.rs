@@ -7,6 +7,7 @@
 use gemma_compression::types::Type;
 use gemma_gpu::backend::Backend;
 use gemma_gpu::cuda::CudaBackend;
+use gemma_gpu::gemma::upload_gemma_weight;
 
 fn approx_eq(a: &[f32], b: &[f32], tol: f32) {
     assert_eq!(
@@ -79,9 +80,7 @@ fn matvec_f32() {
     let weight_f32: Vec<f32> = (1..=12).map(|x| x as f32).collect();
     let weight_bytes: Vec<u8> = weight_f32.iter().flat_map(|f| f.to_ne_bytes()).collect();
 
-    let wgt = backend
-        .upload_weight(&weight_bytes, Type::F32, rows, cols)
-        .unwrap();
+    let wgt = upload_gemma_weight(&backend, &weight_bytes, Type::F32, rows, cols).unwrap();
 
     let x_data = vec![1.0, 0.5, -1.0];
     let mut x = backend.alloc(cols).unwrap();
@@ -110,9 +109,7 @@ fn matvec_sfp() {
     let mut sfp_packed = vec![0u8; rows * cols];
     gemma_compression::sfp::encode_f32(&weight_f32, &mut sfp_packed);
 
-    let wgt = backend
-        .upload_weight(&sfp_packed, Type::SFP, rows, cols)
-        .unwrap();
+    let wgt = upload_gemma_weight(&backend, &sfp_packed, Type::SFP, rows, cols).unwrap();
 
     let x_data: Vec<f32> = (0..cols).map(|i| i as f32 * 0.5).collect();
     let mut x = backend.alloc(cols).unwrap();
@@ -142,7 +139,8 @@ fn rms_norm_matches() {
     backend.upload_f32(&data, &mut buf).unwrap();
     let mut scale_buf = backend.alloc(4).unwrap();
     backend.upload_f32(&scale_data, &mut scale_buf).unwrap();
-    backend.rms_norm(&mut buf, &scale_buf, eps).unwrap();
+    // Gemma uses (1 + scale) convention
+    backend.rms_norm(&mut buf, &scale_buf, eps, true).unwrap();
     backend.synchronize().unwrap();
 
     let mut result = vec![0.0f32; 4];

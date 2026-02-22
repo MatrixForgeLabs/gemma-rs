@@ -4,7 +4,6 @@
 //!
 //! Tests at Gemma 270M dimensions: model_dim=1536, ff_hidden_dim=6144
 
-use gemma_compression::types::Type;
 use gemma_gpu::backend::Backend;
 use gemma_gpu::cpu::CpuBackend;
 use std::time::Instant;
@@ -52,10 +51,8 @@ fn main() {
         let weight_f32: Vec<f32> = (0..rows * cols)
             .map(|i| ((i % 1000) as f32 - 500.0) * 0.001)
             .collect();
-        let weight_bytes: Vec<u8> = weight_f32.iter().flat_map(|f| f.to_ne_bytes()).collect();
-
         let wgt = cpu
-            .upload_weight(&weight_bytes, Type::F32, *rows, *cols)
+            .upload_weight_f32(&weight_f32, *rows, *cols)
             .unwrap();
         let x_data: Vec<f32> = (0..*cols).map(|i| (i as f32) * 0.001).collect();
         let mut x = cpu.alloc(*cols).unwrap();
@@ -82,11 +79,8 @@ fn main() {
                     let weight_f32: Vec<f32> = (0..rows * cols)
                         .map(|i| ((i % 1000) as f32 - 500.0) * 0.001)
                         .collect();
-                    let weight_bytes: Vec<u8> =
-                        weight_f32.iter().flat_map(|f| f.to_ne_bytes()).collect();
-
                     let wgt = cuda
-                        .upload_weight(&weight_bytes, Type::F32, *rows, *cols)
+                        .upload_weight_f32(&weight_f32, *rows, *cols)
                         .unwrap();
                     let x_data: Vec<f32> = (0..*cols).map(|i| (i as f32) * 0.001).collect();
                     let mut x = cuda.alloc(*cols).unwrap();
