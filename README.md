@@ -2,6 +2,8 @@
 
 `gemma-rs` is a Rust implementation of the `gemma.cpp` inference stack, with CPU execution and optional CUDA acceleration.
 
+This project is being ported for use in [Octant-OS.com](https://octant-os.com).
+
 ## What this repo includes
 
 - Multi-crate Rust workspace for model runtime, I/O, kernels, threading, compression, and CLI tooling.
