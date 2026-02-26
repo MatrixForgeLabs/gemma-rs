@@ -9,8 +9,15 @@ gemma-core = { path = "../gemma-core" }
 gemma-gpu = { path = "../gemma-gpu", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"], optional = true }
+axum = { version = "0.7", features = ["json"], optional = true }
+tower-http = { version = "0.5", features = ["cors"], optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }
+tokio-stream = { version = "0.1", optional = true }
+async-stream = { version = "0.3", optional = true }
 
 [features]
 default = []
 gpu = ["gemma-core/gpu", "dep:gemma-gpu"]
 cuda = ["gpu", "gemma-gpu/cuda"]
+serve = ["dep:tokio", "dep:axum", "dep:tower-http", "dep:uuid", "dep:tokio-stream", "dep:async-stream"]

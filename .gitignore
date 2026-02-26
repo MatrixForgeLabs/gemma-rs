@@ -11,3 +11,10 @@ kaggle.json
 
 # Claude Code temp files
 .claude/
+
+# Local planning/agent docs
+AGENTS.md
+PARITY_CHECK.md
+docs/
+reports/
+scripts/*

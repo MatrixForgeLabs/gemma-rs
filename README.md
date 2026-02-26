@@ -12,5 +12,6 @@ Rust port of `gemma.cpp`, with CPU and optional CUDA backends.
 - Build CUDA CLI: `cargo build -p gemma-cli --features cuda`
 - Chat: `cargo run -p gemma-cli -- --chat --stream --weights path/to/weights.sbs`
 - Bench: `cargo run -p gemma-cli -- --bench --device cuda --weights path/to/weights.sbs`
+- API server: `cargo run -p gemma-cli --features serve -- --weights path/to/weights.sbs --serve`
 
 Run `cargo run -p gemma-cli -- --help` for full flags.

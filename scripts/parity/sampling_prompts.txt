@@ -1,5 +1,0 @@
-Hello
-Write a one sentence summary of Rust ownership.
-What is 2 + 2?
-List three colors.
-Complete: The quick brown fox

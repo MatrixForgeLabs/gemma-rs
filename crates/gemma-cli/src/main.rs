@@ -1,6 +1,9 @@
 use gemma_core::configs::ModelConfig;
 use gemma_core::gemma::{Gemma, SamplingOptions};
 
+#[cfg(feature = "serve")]
+mod serve;
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
@@ -25,6 +28,8 @@ fn main() {
     let mut bench_iters: usize = 3;
     let mut bench_warmup: usize = 1;
     let mut bench_json: Option<String> = None;
+    #[cfg(feature = "serve")]
+    let mut serve_addr: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -122,9 +127,55 @@ fn main() {
                     bench_json = Some(args[i].clone());
                 }
             }
+            #[cfg(feature = "serve")]
+            "--serve" => {
+                // Next arg is optional bind address; if missing or looks like a flag, use default
+                if i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                    i += 1;
+                    serve_addr = Some(args[i].clone());
+                } else {
+                    serve_addr = Some("127.0.0.1:8080".to_string());
+                }
+            }
             _ => {}
         }
         i += 1;
+    }
+
+    // ── Serve mode: launch HTTP server (loads model in inference thread) ──
+    #[cfg(feature = "serve")]
+    if let Some(addr) = serve_addr {
+        let inference_device = match device.as_str() {
+            "cpu" => serve::InferenceDevice::Cpu,
+            #[cfg(feature = "cuda")]
+            d if d == "cuda" || d.starts_with("cuda:") => {
+                let ordinal = if d.starts_with("cuda:") {
+                    d[5..].parse::<usize>().unwrap_or(0)
+                } else {
+                    0
+                };
+                serve::InferenceDevice::Cuda(ordinal)
+            }
+            #[cfg(not(feature = "cuda"))]
+            d if d == "cuda" || d.starts_with("cuda:") => {
+                eprintln!("CUDA support not compiled. Rebuild with: cargo build --features cuda,serve");
+                std::process::exit(1);
+            }
+            other => {
+                eprintln!("Unknown device: {other}. Use 'cpu' or 'cuda'");
+                std::process::exit(1);
+            }
+        };
+
+        // Derive model name from weights filename
+        let model_name = std::path::Path::new(&weights)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("gemma")
+            .to_string();
+
+        serve::run_server(weights, inference_device, addr, model_name);
+        return;
     }
 
     let config = ModelConfig::new(0);
@@ -304,6 +355,8 @@ gemma-cli usage:
   --bench-iters <n>     Measured iterations for bench (default 3)
   --bench-warmup <n>    Warmup iterations (default 1)
   --bench-json <path>   Write bench results as JSON
+  --serve [addr:port]   Start OpenAI-compatible API server (requires --features serve)
+                        Default: 127.0.0.1:8080
 "
     );
 }
